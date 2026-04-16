@@ -1,0 +1,12 @@
+spring:
+  application:
+    name: lingua-link-backend
+
+server:
+  port: 8080
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info

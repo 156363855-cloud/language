@@ -1,0 +1,30 @@
+services:
+  backend:
+    build:
+      context: ./backend
+      network: host
+    container_name: lingualink-backend
+    network_mode: host
+    environment:
+      JAVA_TOOL_OPTIONS: "-Xms128m -Xmx256m -XX:+UseSerialGC"
+      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
+    volumes:
+      - ./backend/runtime:/app/backend/runtime
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8080/actuator/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 40s
+
+  frontend:
+    build:
+      context: ./frontend
+      network: host
+    container_name: lingualink-frontend
+    network_mode: host
+    depends_on:
+      backend:
+        condition: service_healthy
+    restart: unless-stopped

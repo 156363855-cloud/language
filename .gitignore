@@ -1,0 +1,16 @@
+frontend/node_modules/
+frontend/dist/
+frontend/.DS_Store
+frontend/android/.gradle/
+backend/target/
+backend/.m2/
+backend/.idea/
+backend/scripts/__pycache__/
+backend/runtime/
+deploy/backend/app.jar
+deploy/backend/runtime/
+deploy/frontend/dist/
+deploy/backend/scripts/__pycache__/
+.m2-local/
+lingualink-deploy.tar.gz
+.DS_Store

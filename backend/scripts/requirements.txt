@@ -1,0 +1,4 @@
+openai>=1.75.0
+yt-dlp>=2025.3.31
+faster-whisper>=1.1.1
+deep-translator>=1.11.4

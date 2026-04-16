@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <defs>
+    <linearGradient id="lingualinkGradient" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#0b7a75" />
+      <stop offset="100%" stop-color="#f2a43a" />
+    </linearGradient>
+  </defs>
+  <rect width="64" height="64" rx="18" fill="#f7f4ec" />
+  <path
+    d="M18 16h10v22c0 5.5 2.8 8.5 8.4 8.5H46v9H36.4C24.7 55.5 18 49.2 18 38V16zm18 0h10v20h-10V16z"
+    fill="url(#lingualinkGradient)"
+  />
+</svg>
