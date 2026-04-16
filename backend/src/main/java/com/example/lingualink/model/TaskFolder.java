@@ -10,6 +10,7 @@ public class TaskFolder {
     private String kind;
     private String contentLanguage;
     private String coverImageDataUrl;
+    private Integer coverOpacity;
     private Instant createdAt;
 
     public String getId() {
@@ -58,6 +59,14 @@ public class TaskFolder {
 
     public void setCoverImageDataUrl(String coverImageDataUrl) {
         this.coverImageDataUrl = coverImageDataUrl;
+    }
+
+    public Integer getCoverOpacity() {
+        return coverOpacity;
+    }
+
+    public void setCoverOpacity(Integer coverOpacity) {
+        this.coverOpacity = coverOpacity;
     }
 
     public Instant getCreatedAt() {

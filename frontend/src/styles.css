@@ -22,7 +22,8 @@ body {
 
 button,
 input,
-select {
+select,
+textarea {
   font: inherit;
 }
 
@@ -170,7 +171,7 @@ button {
   bottom: 12px;
   z-index: 24;
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 10px;
   padding: 10px;
   border-radius: 24px;
@@ -255,6 +256,10 @@ button {
   gap: 20px;
 }
 
+.desktop-language-switcher {
+  margin-right: 4px;
+}
+
 .compact-task-form {
   grid-template-columns: repeat(4, minmax(0, 1fr));
   align-items: end;
@@ -291,6 +296,15 @@ input {
   border: 1px solid rgba(20, 50, 61, 0.12);
   border-radius: 14px;
   background: rgba(255, 255, 255, 0.92);
+}
+
+textarea {
+  width: 100%;
+  padding: 14px 16px;
+  border: 1px solid rgba(20, 50, 61, 0.12);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.92);
+  resize: vertical;
 }
 
 select {
@@ -356,8 +370,105 @@ select {
 }
 
 .desktop-config-grid {
-  grid-template-columns: 280px minmax(340px, 0.95fr) minmax(420px, 1.1fr);
+  grid-template-columns: minmax(540px, 1.1fr) minmax(420px, 0.9fr);
   height: min(760px, calc(100vh - 280px));
+  align-items: start;
+}
+
+.desktop-library-panel {
+  display: flex;
+  flex-direction: column;
+  align-self: start;
+}
+
+.desktop-folder-stack {
+  display: grid;
+  grid-template-rows: minmax(0, 1fr);
+  min-height: 0;
+  flex: 1;
+}
+
+.desktop-folder-group {
+  display: grid;
+  gap: 12px;
+  min-height: 0;
+}
+
+.desktop-group-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  color: #627b82;
+  font-size: 0.92rem;
+  font-weight: 700;
+}
+
+.desktop-compact-list {
+  min-height: 0;
+}
+
+.desktop-tree-node {
+  display: grid;
+  gap: 10px;
+}
+
+.desktop-tree-children {
+  display: grid;
+  gap: 10px;
+  margin-left: 20px;
+  padding-left: 14px;
+  border-left: 2px solid rgba(20, 50, 61, 0.1);
+}
+
+.nested-head {
+  padding-top: 2px;
+}
+
+.nested-channel-list {
+  padding-right: 0;
+}
+
+.compact-empty-state {
+  margin: 0;
+  font-size: 0.92rem;
+}
+
+.desktop-folder-item,
+.desktop-channel-card {
+  display: grid;
+  grid-template-columns: 28px minmax(0, 1fr);
+  align-items: center;
+  gap: 10px;
+}
+
+.current-folder-card {
+  cursor: default;
+  margin-bottom: 10px;
+}
+
+.folder-item-select {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.folder-item-radio {
+  width: 16px;
+  height: 16px;
+  border-radius: 999px;
+  border: 2px solid rgba(20, 50, 61, 0.22);
+  background: rgba(255, 255, 255, 0.75);
+}
+
+.folder-item-radio.active {
+  border-color: #0b7a75;
+  box-shadow: inset 0 0 0 4px #0b7a75;
+}
+
+.desktop-channel-copy {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
 }
 
 .panel-card,
@@ -445,13 +556,16 @@ select {
   width: 100%;
   aspect-ratio: 16 / 9;
   object-fit: cover;
-  opacity: 0.5;
 }
 
 .inline-button-row {
   display: flex;
   gap: 10px;
   flex-wrap: wrap;
+}
+
+.folder-editor-modal {
+  width: min(560px, 100%);
 }
 
 .folder-item {
@@ -948,6 +1062,39 @@ select {
   gap: 14px;
 }
 
+.vocabulary-date-list {
+  display: grid;
+  gap: 14px;
+}
+
+.vocabulary-date-group {
+  display: grid;
+  gap: 10px;
+}
+
+.vocabulary-date-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  width: 100%;
+  padding: 14px 16px;
+  border-radius: 18px;
+  border: 1px solid rgba(20, 50, 61, 0.08);
+  background: rgba(20, 50, 61, 0.05);
+  color: #14323d;
+  text-align: left;
+}
+
+.vocabulary-date-toggle span:first-child {
+  display: grid;
+  gap: 4px;
+}
+
+.vocabulary-date-toggle small {
+  color: #627b82;
+}
+
 .vocabulary-list {
   display: grid;
   gap: 12px;
@@ -960,6 +1107,12 @@ select {
   border-radius: 18px;
   border: 1px solid rgba(20, 50, 61, 0.08);
   background: linear-gradient(180deg, rgba(255, 248, 237, 0.78), rgba(240, 248, 247, 0.92));
+}
+
+.vocabulary-item-button {
+  width: 100%;
+  text-align: left;
+  color: #14323d;
 }
 
 .vocabulary-item-top {

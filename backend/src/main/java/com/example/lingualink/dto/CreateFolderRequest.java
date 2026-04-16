@@ -8,6 +8,7 @@ public record CreateFolderRequest(
         String parentId,
         String kind,
         String contentLanguage,
-        String coverImageDataUrl
+        String coverImageDataUrl,
+        Integer coverOpacity
 ) {
 }

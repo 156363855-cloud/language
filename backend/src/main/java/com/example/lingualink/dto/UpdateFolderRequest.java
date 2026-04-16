@@ -7,6 +7,7 @@ public record UpdateFolderRequest(
         String name,
         String parentId,
         String contentLanguage,
-        String coverImageDataUrl
+        String coverImageDataUrl,
+        Integer coverOpacity
 ) {
 }

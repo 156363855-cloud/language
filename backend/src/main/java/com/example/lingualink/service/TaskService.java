@@ -55,13 +55,14 @@ public class TaskService {
         initializeDefaultFolder();
         loadTasks();
         recoverMissingFolders();
+        ensureTasksAssignedToChannels();
     }
 
     public synchronized TranscriptionTask createTask(CreateTaskRequest request) {
         TranscriptionTask task = new TranscriptionTask();
         task.setId(UUID.randomUUID().toString());
         task.setMediaUrl(request.mediaUrl());
-        task.setFolderId(resolveFolderId(request.folderId()));
+        task.setFolderId(resolveTaskFolderId(request.folderId()));
         task.setSourceLanguage(request.sourceLanguage());
         task.setTargetLanguages(normalizeLanguages(request.targetLanguages()));
         task.setStatus(TaskStatus.QUEUED);
@@ -100,6 +101,7 @@ public class TaskService {
         folder.setParentId(normalizedParentId);
         folder.setContentLanguage(resolveFolderContentLanguage(normalizedKind, normalizedParentId, request.contentLanguage()));
         folder.setCoverImageDataUrl(normalizeCoverImageDataUrl(request.coverImageDataUrl()));
+        folder.setCoverOpacity(normalizeCoverOpacity(request.coverOpacity()));
         folder.setCreatedAt(Instant.now());
         folders.put(folder.getId(), folder);
         persistFolders();
@@ -130,13 +132,16 @@ public class TaskService {
         if (request.coverImageDataUrl() != null) {
             folder.setCoverImageDataUrl(normalizeCoverImageDataUrl(request.coverImageDataUrl()));
         }
+        if (request.coverOpacity() != null) {
+            folder.setCoverOpacity(normalizeCoverOpacity(request.coverOpacity()));
+        }
         persistFolders();
         return folder;
     }
 
     public synchronized TranscriptionTask moveTaskToFolder(String taskId, String folderId) {
         TranscriptionTask task = getTask(taskId);
-        task.setFolderId(resolveFolderId(folderId));
+        task.setFolderId(resolveTaskFolderId(folderId));
         task.setUpdatedAt(Instant.now());
         persistTask(task);
         return task;
@@ -267,6 +272,7 @@ public class TaskService {
                             if (task.getFolderId() == null || task.getFolderId().isBlank()) {
                                 task.setFolderId(DEFAULT_FOLDER_ID);
                             }
+                            task.setFolderId(resolveTaskFolderId(task.getFolderId()));
                             updateAudioAvailability(task);
                             tasks.put(task.getId(), task);
                             persistTask(task);
@@ -304,6 +310,24 @@ public class TaskService {
             changed = true;
         }
 
+        if (changed) {
+            persistFolders();
+        }
+    }
+
+    private synchronized void ensureTasksAssignedToChannels() {
+        boolean changed = false;
+        for (TranscriptionTask task : tasks.values()) {
+            String resolvedFolderId = resolveTaskFolderId(task.getFolderId());
+            if (!resolvedFolderId.equals(task.getFolderId())) {
+                task.setFolderId(resolvedFolderId);
+                if (task.getUpdatedAt() == null) {
+                    task.setUpdatedAt(Instant.now());
+                }
+                persistTask(task);
+                changed = true;
+            }
+        }
         if (changed) {
             persistFolders();
         }
@@ -405,6 +429,9 @@ public class TaskService {
         if (folder.getCoverImageDataUrl() != null && folder.getCoverImageDataUrl().isBlank()) {
             folder.setCoverImageDataUrl(null);
         }
+        if (folder.getCoverOpacity() == null) {
+            folder.setCoverOpacity(50);
+        }
     }
 
     private String inferFolderLanguage(String name) {
@@ -430,6 +457,52 @@ public class TaskService {
             throw new IllegalArgumentException("文件夹不存在: " + resolved);
         }
         return resolved;
+    }
+
+    private String resolveTaskFolderId(String folderId) {
+        String resolvedFolderId = resolveFolderId(folderId);
+        TaskFolder folder = folders.get(resolvedFolderId);
+        if (folder == null) {
+            throw new IllegalArgumentException("文件夹不存在: " + resolvedFolderId);
+        }
+        if (!FOLDER_KIND_CATEGORY.equals(normalizeFolderKind(folder.getKind()))) {
+            return resolvedFolderId;
+        }
+        return ensureChannelUnderCategory(resolvedFolderId);
+    }
+
+    private String ensureChannelUnderCategory(String categoryId) {
+        TaskFolder existingChannel = folders.values().stream()
+                .filter(folder -> FOLDER_KIND_CHANNEL.equals(normalizeFolderKind(folder.getKind())))
+                .filter(folder -> categoryId.equals(folder.getParentId()))
+                .sorted(Comparator.comparing(TaskFolder::getCreatedAt, Comparator.nullsLast(Comparator.naturalOrder())))
+                .findFirst()
+                .orElse(null);
+        if (existingChannel != null) {
+            return existingChannel.getId();
+        }
+
+        TaskFolder categoryFolder = folders.get(categoryId);
+        if (categoryFolder == null) {
+            throw new IllegalArgumentException("上级大类不存在: " + categoryId);
+        }
+
+        TaskFolder channel = new TaskFolder();
+        channel.setId(UUID.randomUUID().toString());
+        channel.setName(normalizeFolderName("未命名广播", null, categoryId));
+        channel.setKind(FOLDER_KIND_CHANNEL);
+        channel.setParentId(categoryId);
+        channel.setContentLanguage(resolveFolderContentLanguage(
+                FOLDER_KIND_CHANNEL,
+                categoryId,
+                categoryFolder.getContentLanguage()
+        ));
+        channel.setCoverImageDataUrl(null);
+        channel.setCoverOpacity(50);
+        channel.setCreatedAt(Instant.now());
+        folders.put(channel.getId(), channel);
+        persistFolders();
+        return channel.getId();
     }
 
     private String normalizeFolderName(String folderName, String currentFolderId, String parentId) {
@@ -508,6 +581,16 @@ public class TaskService {
         }
         String normalized = coverImageDataUrl.trim();
         return normalized.isEmpty() ? null : normalized;
+    }
+
+    private Integer normalizeCoverOpacity(Integer coverOpacity) {
+        if (coverOpacity == null) {
+            return 50;
+        }
+        if (coverOpacity < 0 || coverOpacity > 100) {
+            throw new IllegalArgumentException("封面透明度只支持 0 到 100");
+        }
+        return coverOpacity;
     }
 
     private Path resolveRepositoryRoot(Path currentDirectory) {

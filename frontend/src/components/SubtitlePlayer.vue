@@ -36,6 +36,7 @@ const duration = ref(0)
 const isPlaying = ref(false)
 const playbackRate = ref(1)
 const playbackMode = ref('loop')
+const loopSegmentIndex = ref(null)
 const segmentRefs = ref([])
 const audioRef = ref(null)
 const audioLoadError = ref('')
@@ -60,6 +61,16 @@ const activeSegmentIndex = computed(() =>
 const activeSegment = computed(() =>
   activeSegmentIndex.value >= 0 ? props.task.segments[activeSegmentIndex.value] : null
 )
+
+const playbackModeLabel = computed(() => {
+  if (playbackMode.value === 'segment') {
+    return '单句'
+  }
+  if (playbackMode.value === 'folder') {
+    return '顺播'
+  }
+  return '循环'
+})
 
 const currentPlaylistIndex = computed(() =>
   props.playlist.findIndex((item) => item.id === props.task.id)
@@ -100,6 +111,22 @@ function syncAudioState() {
   currentTime.value = audioRef.value?.currentTime || 0
   duration.value = audioRef.value?.duration || 0
   isPlaying.value = Boolean(audioRef.value && !audioRef.value.paused)
+
+  if (
+    playbackMode.value === 'segment'
+    && audioRef.value
+    && loopSegmentIndex.value !== null
+    && props.task.segments[loopSegmentIndex.value]
+  ) {
+    const targetSegment = props.task.segments[loopSegmentIndex.value]
+    if (currentTime.value >= targetSegment.endSeconds) {
+      audioRef.value.currentTime = targetSegment.startSeconds
+      currentTime.value = targetSegment.startSeconds
+      if (audioRef.value.paused) {
+        audioRef.value.play().catch(() => {})
+      }
+    }
+  }
 }
 
 function togglePlayback() {
@@ -134,7 +161,18 @@ function togglePlaybackRate() {
 }
 
 function togglePlaybackMode() {
-  playbackMode.value = playbackMode.value === 'loop' ? 'folder' : 'loop'
+  if (playbackMode.value === 'loop') {
+    playbackMode.value = 'segment'
+    loopSegmentIndex.value = activeSegmentIndex.value >= 0 ? activeSegmentIndex.value : 0
+    return
+  }
+  if (playbackMode.value === 'segment') {
+    playbackMode.value = 'folder'
+    loopSegmentIndex.value = null
+    return
+  }
+  playbackMode.value = 'loop'
+  loopSegmentIndex.value = null
 }
 
 function handleEnded() {
@@ -142,6 +180,14 @@ function handleEnded() {
   isPlaying.value = false
 
   if (!audioRef.value) {
+    return
+  }
+
+  if (playbackMode.value === 'segment' && loopSegmentIndex.value !== null && props.task.segments[loopSegmentIndex.value]) {
+    const targetSegment = props.task.segments[loopSegmentIndex.value]
+    audioRef.value.currentTime = targetSegment.startSeconds
+    currentTime.value = targetSegment.startSeconds
+    audioRef.value.play().catch(() => {})
     return
   }
 
@@ -168,6 +214,12 @@ function handleEnded() {
 
 function jumpTo(seconds) {
   currentTime.value = seconds
+  if (playbackMode.value === 'segment') {
+    const targetIndex = props.task.segments.findIndex(
+      (segment) => seconds >= segment.startSeconds && seconds < segment.endSeconds
+    )
+    loopSegmentIndex.value = targetIndex >= 0 ? targetIndex : loopSegmentIndex.value
+  }
   if (audioRef.value) {
     audioRef.value.currentTime = seconds
     audioRef.value.play().catch(() => {})
@@ -177,6 +229,12 @@ function jumpTo(seconds) {
 function seekAudio(event) {
   const nextTime = Number(event.target.value)
   currentTime.value = nextTime
+  if (playbackMode.value === 'segment') {
+    const targetIndex = props.task.segments.findIndex(
+      (segment) => nextTime >= segment.startSeconds && nextTime < segment.endSeconds
+    )
+    loopSegmentIndex.value = targetIndex >= 0 ? targetIndex : loopSegmentIndex.value
+  }
   if (audioRef.value) {
     audioRef.value.currentTime = nextTime
   }
@@ -216,14 +274,24 @@ function tokenizeJapanese(text) {
   }))
 }
 
+function tokenizeEnglish(text) {
+  const matches = text.match(/([A-Za-z]+(?:['’-][A-Za-z]+)*|[0-9]+(?:[.,][0-9]+)*|[.,!?;:()[\]"“”‘’/\\-]+|\s+|.)/g)
+  return (matches || []).map((value, index) => ({
+    id: `${index}-${value}`,
+    value,
+    interactive: /^[A-Za-z]+(?:['’-][A-Za-z]+)*$/.test(value) || /^[0-9]+(?:[.,][0-9]+)*$/.test(value),
+    colorClass: tokenPalette[index % tokenPalette.length]
+  }))
+}
+
 function buildTokens(text) {
   if (!text) {
     return []
   }
-  if (!isJapaneseText(text)) {
-    return [{ id: 'plain-0', value: text, interactive: false, colorClass: 'token-plain' }]
+  if (isJapaneseText(text)) {
+    return tokenizeJapanese(text)
   }
-  return tokenizeJapanese(text)
+  return tokenizeEnglish(text)
 }
 
 function clearLongPress() {
@@ -321,6 +389,7 @@ watch(
     isPlaying.value = false
     playbackRate.value = 1
     playbackMode.value = 'loop'
+    loopSegmentIndex.value = null
     segmentRefs.value = []
     audioLoadError.value = ''
     wordDialog.value = null
@@ -422,7 +491,7 @@ onBeforeUnmount(() => {
 
       <div class="mobile-control-row">
         <button type="button" class="mobile-mode-button" @click="togglePlaybackMode">
-          {{ playbackMode === 'loop' ? '循环' : '顺播' }}
+          {{ playbackModeLabel }}
         </button>
         <button type="button" class="mobile-rate-button" @click="togglePlaybackRate">
           {{ playbackRate }}x

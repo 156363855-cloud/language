@@ -46,12 +46,12 @@ public class WordAssistantService {
 
     private WordExplanation requestDeepSeek(ExplainWordRequest request, String apiKey) throws IOException, InterruptedException {
         String prompt = """
-                你是一个简洁的日语老师。请根据给定词语和句子，返回一个 JSON 对象，不要输出 JSON 以外的任何内容。
+                你是一个简洁的语言词汇老师。请根据给定词语、语言和句子，返回一个 JSON 对象，不要输出 JSON 以外的任何内容。
                 字段要求：
-                reading: 假名读音，未知可留空
+                reading: 读音或音标。日语填假名，英语可填音标或留空，中文可留空
                 meaning: 用简体中文解释，1-2 句，简洁
                 usage: 说明这个词常见用法或语感，1 句
-                example: 用这个词造一个简短日语例句，并附上简短中文翻译，放在同一个字符串里
+                example: 用这个词造一个符合该语言的简短例句，并附上简短中文翻译，放在同一个字符串里
 
                 词语：%s
                 语言：%s
@@ -66,7 +66,7 @@ public class WordAssistantService {
                 "model", "deepseek-chat",
                 "temperature", 0.3,
                 "messages", List.of(
-                        Map.of("role", "system", "content", "你是一个输出稳定 JSON 的日语词汇解释助手。"),
+                        Map.of("role", "system", "content", "你是一个输出稳定 JSON 的多语言词汇解释助手。"),
                         Map.of("role", "user", "content", prompt)
                 )
         );

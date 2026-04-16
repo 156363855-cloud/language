@@ -63,25 +63,40 @@ const selectedMobileCategoryId = ref('')
 const selectedMobileChannelId = ref('')
 const selectedDesktopCategoryId = ref('')
 const selectedDesktopChannelId = ref('')
+const desktopLibraryLevel = ref('categories')
+const hasOpenedDesktopChannel = ref(false)
 const desktopTaskCategoryId = ref('')
 const desktopTaskChannelId = ref('')
+const selectedDesktopCategoryRadioId = ref('')
+const selectedDesktopChannelRadioId = ref('')
 const isUpdatingProfile = ref(false)
 const isCreatingCategory = ref(false)
 const isCreatingChannel = ref(false)
 const newFolderName = ref('')
 const renameFolderName = ref('')
 const adminCategoryForm = ref({
-  name: '',
-  contentLanguage: 'ja'
+  name: '未命名分类',
+  contentLanguage: 'ja',
+  coverImageDataUrl: '',
+  coverOpacity: 50
 })
 const adminChannelForm = ref({
+  name: '未命名广播',
+  parentId: '',
+  coverImageDataUrl: '',
+  coverOpacity: 50
+})
+const bulkMediaInput = ref('')
+const batchFileName = ref('')
+const showFolderEditorModal = ref(false)
+const folderEditorMode = ref('category')
+const folderEditorForm = ref({
+  id: '',
   name: '',
   parentId: '',
-  coverImageDataUrl: ''
+  coverImageDataUrl: '',
+  coverOpacity: 50
 })
-const categoryEditorName = ref('')
-const channelEditorName = ref('')
-const channelEditorCoverImageDataUrl = ref('')
 const isSubmitting = ref(false)
 const isCreatingFolder = ref(false)
 const isLoading = ref(false)
@@ -92,6 +107,8 @@ const isSyncingCloud = ref(false)
 const isLoadingVocabulary = ref(false)
 const vocabulary = ref([])
 const showVocabularyModal = ref(false)
+const expandedVocabularyDates = ref([])
+const selectedVocabularyItem = ref(null)
 const errorMessage = ref('')
 const successMessage = ref('')
 const authErrorMessage = ref('')
@@ -127,6 +144,21 @@ const detailPlaylist = computed(() =>
   filteredTasks.value.filter((task) => task.status === 'COMPLETED' && task.audioAvailable)
 )
 const vocabularyCount = computed(() => vocabulary.value.length)
+const groupedVocabulary = computed(() => {
+  const groups = new Map()
+  for (const item of vocabulary.value) {
+    const dateKey = formatVocabularyDateKey(item.createdAt)
+    if (!groups.has(dateKey)) {
+      groups.set(dateKey, [])
+    }
+    groups.get(dateKey).push(item)
+  }
+  return [...groups.entries()].map(([dateKey, items]) => ({
+    dateKey,
+    label: formatVocabularyDateLabel(dateKey),
+    items: [...items].sort((left, right) => new Date(right.createdAt) - new Date(left.createdAt))
+  }))
+})
 const mobilePreferredLanguageLabel = computed(() =>
   preferredContentLanguage.value === 'ja' ? '日文听力' : '英文听力'
 )
@@ -191,6 +223,15 @@ const selectedDesktopCategory = computed(() =>
 const selectedDesktopChannel = computed(() =>
   folders.value.find((folder) => folder.id === selectedDesktopChannelId.value) || null
 )
+const showDesktopChannelPanel = computed(() =>
+  desktopLibraryLevel.value === 'channels' && hasOpenedDesktopChannel.value && Boolean(selectedDesktopChannelId.value)
+)
+const desktopVisibleCategories = computed(() => {
+  if (desktopLibraryLevel.value === 'channels' && selectedDesktopCategory.value) {
+    return [selectedDesktopCategory.value]
+  }
+  return categoryFolders.value
+})
 const desktopCategoryTaskCount = (categoryId) =>
   visibleTasks.value.filter((task) =>
     task.folderId === categoryId || folders.value.some((folder) => folder.id === task.folderId && folder.parentId === categoryId)
@@ -208,11 +249,20 @@ const desktopCategoryChannels = computed(() =>
         latestUpdatedAt: latestTask?.updatedAt || latestTask?.createdAt || null
       }
     })
-    .filter((channel) => channel.taskCount > 0)
 )
 const desktopChannelCards = computed(() => desktopCategoryChannels.value)
 const desktopChannelOptions = computed(() =>
   folders.value.filter((folder) => folder.kind === 'channel' && folder.parentId === desktopTaskCategoryId.value)
+)
+const desktopSelectedCategoryForEdit = computed(() =>
+  categoryFolders.value.find((folder) => folder.id === selectedDesktopCategoryRadioId.value)
+  || categoryFolders.value.find((folder) => folder.id === selectedDesktopCategoryId.value)
+  || null
+)
+const desktopSelectedChannelForEdit = computed(() =>
+  folders.value.find((folder) => folder.id === selectedDesktopChannelRadioId.value)
+  || folders.value.find((folder) => folder.id === selectedDesktopChannelId.value)
+  || null
 )
 const desktopEpisodeTasks = computed(() => {
   if (!selectedDesktopChannelId.value) {
@@ -222,6 +272,22 @@ const desktopEpisodeTasks = computed(() => {
     .filter((task) => task.folderId === selectedDesktopChannelId.value)
     .sort((left, right) => new Date(right.createdAt) - new Date(left.createdAt))
 })
+const parsedBulkLinks = computed(() =>
+  bulkMediaInput.value
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map((line) => line.replace(/^-\s*/, ''))
+    .map((line) => {
+      const urlMatch = line.match(/https?:\/\/\S+/)
+      if (urlMatch) {
+        return urlMatch[0]
+      }
+      const yamlValueMatch = line.match(/^[^:]+:\s*(https?:\/\/\S+)$/)
+      return yamlValueMatch ? yamlValueMatch[1] : line
+    })
+    .filter((value, index, items) => /^https?:\/\//.test(value) && items.indexOf(value) === index)
+)
 
 function updateViewportWidth() {
   viewportWidth.value = window.innerWidth
@@ -236,15 +302,57 @@ function readFileAsDataUrl(file) {
   })
 }
 
-function buildCoverCardStyle(coverImageDataUrl) {
-  if (!coverImageDataUrl) {
+function buildFolderCardStyle(folder) {
+  if (!folder?.coverImageDataUrl) {
     return {}
   }
+  const opacity = Math.max(0, Math.min(100, Number(folder.coverOpacity ?? 50))) / 100
   return {
-    backgroundImage: `linear-gradient(rgba(20, 50, 61, 0.5), rgba(20, 50, 61, 0.5)), url(${coverImageDataUrl})`,
+    backgroundImage: `linear-gradient(rgba(20, 50, 61, ${opacity}), rgba(20, 50, 61, ${opacity})), url(${folder.coverImageDataUrl})`,
     backgroundSize: 'cover',
     backgroundPosition: 'center'
   }
+}
+
+function buildNextDefaultFolderName(baseName, parentId = '') {
+  const siblingNames = folders.value
+    .filter((folder) => (folder.parentId || '') === (parentId || ''))
+    .map((folder) => folder.name.toLowerCase())
+
+  if (!siblingNames.includes(baseName.toLowerCase())) {
+    return baseName
+  }
+
+  let index = 2
+  while (siblingNames.includes(`${baseName} ${index}`.toLowerCase())) {
+    index += 1
+  }
+  return `${baseName} ${index}`
+}
+
+function formatVocabularyDateKey(value) {
+  if (!value) {
+    return '未记录日期'
+  }
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) {
+    return '未记录日期'
+  }
+  const year = date.getFullYear()
+  const month = String(date.getMonth() + 1).padStart(2, '0')
+  const day = String(date.getDate()).padStart(2, '0')
+  return `${year}-${month}-${day}`
+}
+
+function formatVocabularyDateLabel(dateKey) {
+  if (dateKey === '未记录日期') {
+    return dateKey
+  }
+  const date = new Date(`${dateKey}T00:00:00`)
+  if (Number.isNaN(date.getTime())) {
+    return dateKey
+  }
+  return `${date.getFullYear()}年${date.getMonth() + 1}月${date.getDate()}日`
 }
 
 function parseHashRoute() {
@@ -304,6 +412,9 @@ function backMobilePodcastLevel() {
 
 function openDesktopCategory(categoryId) {
   selectedDesktopCategoryId.value = categoryId
+  selectedDesktopCategoryRadioId.value = categoryId
+  selectedDesktopChannelRadioId.value = ''
+  hasOpenedDesktopChannel.value = false
   desktopTaskCategoryId.value = categoryId
   const cards = folders.value
     .filter((folder) => folder.kind === 'channel' && folder.parentId === categoryId)
@@ -313,9 +424,34 @@ function openDesktopCategory(categoryId) {
 }
 
 function openDesktopChannel(channelId) {
+  const targetChannel = folders.value.find((folder) => folder.id === channelId)
+  if (targetChannel?.parentId) {
+    selectedDesktopCategoryId.value = targetChannel.parentId
+    selectedDesktopCategoryRadioId.value = targetChannel.parentId
+  }
+  hasOpenedDesktopChannel.value = true
   selectedDesktopChannelId.value = channelId
+  selectedDesktopChannelRadioId.value = channelId
   desktopTaskChannelId.value = channelId
   selectedFolderId.value = channelId
+}
+
+function openSelectedDesktopFolder() {
+  if (selectedDesktopChannelRadioId.value) {
+    desktopLibraryLevel.value = 'channels'
+    openDesktopChannel(selectedDesktopChannelRadioId.value)
+    return
+  }
+  if (selectedDesktopCategoryRadioId.value) {
+    desktopLibraryLevel.value = 'channels'
+    openDesktopCategory(selectedDesktopCategoryRadioId.value)
+  }
+}
+
+function backDesktopFolderLevel() {
+  desktopLibraryLevel.value = 'categories'
+  hasOpenedDesktopChannel.value = false
+  selectedDesktopChannelRadioId.value = ''
 }
 
 function backToDashboard() {
@@ -388,12 +524,15 @@ async function loadLibrary(options = {}) {
 async function loadVocabularyList() {
   if (!currentUser.value) {
     vocabulary.value = []
+    expandedVocabularyDates.value = []
     return
   }
 
   isLoadingVocabulary.value = true
   try {
     vocabulary.value = await fetchVocabulary()
+    const firstDate = groupedVocabulary.value[0]?.dateKey
+    expandedVocabularyDates.value = firstDate ? [firstDate] : []
   } catch (error) {
     errorMessage.value = error.message
   } finally {
@@ -513,32 +652,61 @@ async function handleAdminChannelCoverSelected(event) {
   }
 }
 
-async function handleChannelEditorCoverSelected(event) {
+async function handleAdminCategoryCoverSelected(event) {
   const [file] = event.target.files || []
   if (!file) {
     return
   }
   try {
-    channelEditorCoverImageDataUrl.value = await readFileAsDataUrl(file)
+    adminCategoryForm.value.coverImageDataUrl = await readFileAsDataUrl(file)
   } catch (error) {
     errorMessage.value = error.message
   }
 }
 
-async function submitAdminCategory() {
-  if (!adminCategoryForm.value.name.trim()) {
+async function handleFolderEditorCoverSelected(event) {
+  const [file] = event.target.files || []
+  if (!file) {
     return
   }
+  try {
+    folderEditorForm.value.coverImageDataUrl = await readFileAsDataUrl(file)
+  } catch (error) {
+    errorMessage.value = error.message
+  }
+}
+
+async function handleBatchFileSelected(event) {
+  const [file] = event.target.files || []
+  if (!file) {
+    return
+  }
+  try {
+    batchFileName.value = file.name
+    bulkMediaInput.value = await file.text()
+  } catch (error) {
+    errorMessage.value = '读取批量链接文件失败'
+  }
+}
+
+async function submitAdminCategory() {
   isCreatingCategory.value = true
   errorMessage.value = ''
   try {
-    await createFolder({
-      name: adminCategoryForm.value.name.trim(),
+    const nextName = buildNextDefaultFolderName(adminCategoryForm.value.name.trim() || '未命名分类')
+    const createdCategory = await createFolder({
+      name: nextName,
       kind: 'category',
-      contentLanguage: adminCategoryForm.value.contentLanguage
+      contentLanguage: adminCategoryForm.value.contentLanguage,
+      coverImageDataUrl: adminCategoryForm.value.coverImageDataUrl,
+      coverOpacity: adminCategoryForm.value.coverOpacity
     })
-    adminCategoryForm.value.name = ''
+    adminCategoryForm.value.name = '未命名分类'
+    adminCategoryForm.value.coverImageDataUrl = ''
+    adminCategoryForm.value.coverOpacity = 50
     await loadLibrary({ preferredFolderId: selectedFolderId.value, preferredTaskId: selectedTaskId.value })
+    selectedDesktopCategoryRadioId.value = createdCategory.id
+    openDesktopCategory(createdCategory.id)
   } catch (error) {
     errorMessage.value = error.message
   } finally {
@@ -547,104 +715,33 @@ async function submitAdminCategory() {
 }
 
 async function submitAdminChannel() {
-  if (!adminChannelForm.value.name.trim() || !adminChannelForm.value.parentId) {
+  if (!adminChannelForm.value.parentId) {
     return
   }
   isCreatingChannel.value = true
   errorMessage.value = ''
   try {
-    await createFolder({
-      name: adminChannelForm.value.name.trim(),
+    const nextName = buildNextDefaultFolderName(
+      adminChannelForm.value.name.trim() || '未命名广播',
+      adminChannelForm.value.parentId
+    )
+    const createdChannel = await createFolder({
+      name: nextName,
       kind: 'channel',
       parentId: adminChannelForm.value.parentId,
-      coverImageDataUrl: adminChannelForm.value.coverImageDataUrl
+      coverImageDataUrl: adminChannelForm.value.coverImageDataUrl,
+      coverOpacity: adminChannelForm.value.coverOpacity
     })
-    adminChannelForm.value.name = ''
+    adminChannelForm.value.name = '未命名广播'
     adminChannelForm.value.coverImageDataUrl = ''
+    adminChannelForm.value.coverOpacity = 50
     await loadLibrary({ preferredFolderId: selectedFolderId.value, preferredTaskId: selectedTaskId.value })
+    selectedDesktopChannelRadioId.value = createdChannel.id
+    openDesktopChannel(createdChannel.id)
   } catch (error) {
     errorMessage.value = error.message
   } finally {
     isCreatingChannel.value = false
-  }
-}
-
-async function updateSelectedCategory() {
-  if (!selectedDesktopCategory.value || !categoryEditorName.value.trim()) {
-    return
-  }
-  errorMessage.value = ''
-  successMessage.value = ''
-  try {
-    const updatedFolder = await updateFolder(selectedDesktopCategory.value.id, {
-      name: categoryEditorName.value.trim(),
-      contentLanguage: selectedDesktopCategory.value.contentLanguage
-    })
-    await loadLibrary({ preferredFolderId: updatedFolder.id, preferredTaskId: selectedTaskId.value })
-    successMessage.value = `已更新大类：${updatedFolder.name}`
-  } catch (error) {
-    errorMessage.value = error.message
-  }
-}
-
-async function updateSelectedChannel() {
-  if (!selectedDesktopChannel.value || !channelEditorName.value.trim()) {
-    return
-  }
-  errorMessage.value = ''
-  successMessage.value = ''
-  try {
-    const updatedFolder = await updateFolder(selectedDesktopChannel.value.id, {
-      name: channelEditorName.value.trim(),
-      parentId: selectedDesktopCategoryId.value,
-      contentLanguage: selectedDesktopChannel.value.contentLanguage,
-      coverImageDataUrl: channelEditorCoverImageDataUrl.value
-    })
-    await loadLibrary({ preferredFolderId: updatedFolder.id, preferredTaskId: selectedTaskId.value })
-    successMessage.value = `已更新广播：${updatedFolder.name}`
-  } catch (error) {
-    errorMessage.value = error.message
-  }
-}
-
-async function removeDesktopCategory() {
-  if (!selectedDesktopCategory.value) {
-    return
-  }
-  const confirmed = window.confirm(`确定删除大类《${selectedDesktopCategory.value.name}》吗？它下面的广播也会一起删除。`)
-  if (!confirmed) {
-    return
-  }
-  errorMessage.value = ''
-  successMessage.value = ''
-  try {
-    await removeFolder(selectedDesktopCategory.value.id)
-    selectedDesktopCategoryId.value = ''
-    selectedDesktopChannelId.value = ''
-    await loadLibrary({ preferredFolderId: 'inbox' })
-    successMessage.value = '已删除大类'
-  } catch (error) {
-    errorMessage.value = error.message
-  }
-}
-
-async function removeDesktopChannel() {
-  if (!selectedDesktopChannel.value) {
-    return
-  }
-  const confirmed = window.confirm(`确定删除广播《${selectedDesktopChannel.value.name}》吗？`)
-  if (!confirmed) {
-    return
-  }
-  errorMessage.value = ''
-  successMessage.value = ''
-  try {
-    await removeFolder(selectedDesktopChannel.value.id)
-    selectedDesktopChannelId.value = ''
-    await loadLibrary({ preferredFolderId: 'inbox' })
-    successMessage.value = '已删除广播'
-  } catch (error) {
-    errorMessage.value = error.message
   }
 }
 
@@ -656,6 +753,114 @@ async function submitDesktopTask() {
   form.value.folderId = desktopTaskChannelId.value
   await submitTask()
   selectedDesktopChannelId.value = desktopTaskChannelId.value
+}
+
+async function submitDesktopBatchTasks() {
+  if (!desktopTaskChannelId.value) {
+    errorMessage.value = '先选择一个二类广播，再批量添加链接'
+    return
+  }
+  if (parsedBulkLinks.value.length === 0) {
+    errorMessage.value = '请先粘贴链接，或上传一个 yml 文件'
+    return
+  }
+
+  isSubmitting.value = true
+  errorMessage.value = ''
+  successMessage.value = ''
+  try {
+    const createdTasks = []
+    for (const mediaUrl of parsedBulkLinks.value) {
+      const task = await createTask({
+        mediaUrl,
+        sourceLanguage: form.value.sourceLanguage,
+        targetLanguages: form.value.targetLanguages,
+        folderId: desktopTaskChannelId.value
+      })
+      createdTasks.push(task)
+    }
+    tasks.value = [...createdTasks, ...tasks.value]
+    selectedDesktopChannelId.value = desktopTaskChannelId.value
+    successMessage.value = `已批量添加 ${createdTasks.length} 条链接`
+    bulkMediaInput.value = ''
+    batchFileName.value = ''
+    startPolling()
+  } catch (error) {
+    errorMessage.value = error.message
+  } finally {
+    isSubmitting.value = false
+  }
+}
+
+function openFolderEditor(mode) {
+  const target = mode === 'category' ? desktopSelectedCategoryForEdit.value : desktopSelectedChannelForEdit.value
+  if (!target) {
+    errorMessage.value = mode === 'category' ? '先选中一个一类大类' : '先选中一个二类广播'
+    return
+  }
+  folderEditorMode.value = mode
+  folderEditorForm.value = {
+    id: target.id,
+    name: target.name,
+    parentId: target.parentId || selectedDesktopCategoryId.value || '',
+    coverImageDataUrl: target.coverImageDataUrl || '',
+    coverOpacity: Number(target.coverOpacity ?? 50)
+  }
+  showFolderEditorModal.value = true
+}
+
+async function saveFolderEditor() {
+  if (!folderEditorForm.value.id || !folderEditorForm.value.name.trim()) {
+    return
+  }
+  errorMessage.value = ''
+  successMessage.value = ''
+  try {
+    const payload = {
+      name: folderEditorForm.value.name.trim(),
+      coverImageDataUrl: folderEditorForm.value.coverImageDataUrl,
+      coverOpacity: Number(folderEditorForm.value.coverOpacity ?? 50)
+    }
+    if (folderEditorMode.value === 'category') {
+      payload.contentLanguage = selectedDesktopCategory.value?.contentLanguage || preferredContentLanguage.value
+    } else {
+      payload.parentId = folderEditorForm.value.parentId || selectedDesktopCategoryId.value
+      payload.contentLanguage = selectedDesktopChannel.value?.contentLanguage || preferredContentLanguage.value
+    }
+    await updateFolder(folderEditorForm.value.id, payload)
+    await loadLibrary({ preferredFolderId: selectedFolderId.value, preferredTaskId: selectedTaskId.value })
+    successMessage.value = folderEditorMode.value === 'category' ? '已更新大类' : '已更新广播'
+    showFolderEditorModal.value = false
+  } catch (error) {
+    errorMessage.value = error.message
+  }
+}
+
+async function removeFolderFromEditor() {
+  if (!folderEditorForm.value.id) {
+    return
+  }
+  const confirmed = window.confirm(folderEditorMode.value === 'category' ? '确定删除这个大类吗？下面的广播会一起删除。' : '确定删除这个二类广播吗？')
+  if (!confirmed) {
+    return
+  }
+  errorMessage.value = ''
+  successMessage.value = ''
+  try {
+    await removeFolder(folderEditorForm.value.id)
+    await loadLibrary({ preferredFolderId: 'inbox' })
+    if (folderEditorMode.value === 'category') {
+      selectedDesktopCategoryRadioId.value = ''
+      selectedDesktopCategoryId.value = ''
+    } else {
+      selectedDesktopChannelRadioId.value = ''
+      selectedDesktopChannelId.value = ''
+    }
+    showFolderEditorModal.value = false
+    successMessage.value = folderEditorMode.value === 'category' ? '已删除大类' : '已删除广播'
+  } catch (error) {
+    errorMessage.value = error.message
+  }
 }
 
 async function submitTask() {
@@ -837,14 +1042,35 @@ function stopPolling() {
 }
 
 function openVocabularyModal() {
+  if (isMobileLayout.value) {
+    mobileTab.value = 'vocabulary'
+    loadVocabularyList()
+    return
+  }
+  selectedVocabularyItem.value = null
   showVocabularyModal.value = true
   loadVocabularyList()
+}
+
+function toggleVocabularyDate(dateKey) {
+  if (expandedVocabularyDates.value.includes(dateKey)) {
+    expandedVocabularyDates.value = expandedVocabularyDates.value.filter((value) => value !== dateKey)
+    return
+  }
+  expandedVocabularyDates.value = [...expandedVocabularyDates.value, dateKey]
+}
+
+function openVocabularyItem(item) {
+  selectedVocabularyItem.value = item
 }
 
 async function handleRemoveVocabulary(itemId) {
   try {
     await removeVocabulary(itemId)
     vocabulary.value = vocabulary.value.filter((item) => item.id !== itemId)
+    if (selectedVocabularyItem.value?.id === itemId) {
+      selectedVocabularyItem.value = null
+    }
   } catch (error) {
     errorMessage.value = error.message
   }
@@ -881,6 +1107,9 @@ watch(categoryFolders, (currentCategories) => {
   if (!currentCategories.some((folder) => folder.id === selectedDesktopCategoryId.value)) {
     selectedDesktopCategoryId.value = currentCategories[0]?.id || ''
   }
+  if (!currentCategories.some((folder) => folder.id === selectedDesktopCategoryRadioId.value)) {
+    selectedDesktopCategoryRadioId.value = selectedDesktopCategoryId.value || currentCategories[0]?.id || ''
+  }
   if (!currentCategories.some((folder) => folder.id === desktopTaskCategoryId.value)) {
     desktopTaskCategoryId.value = currentCategories[0]?.id || ''
   }
@@ -893,6 +1122,8 @@ watch(preferredContentLanguage, () => {
   selectedMobileCategoryId.value = ''
   selectedMobileChannelId.value = ''
   mobilePodcastLevel.value = 'categories'
+  desktopLibraryLevel.value = 'categories'
+  hasOpenedDesktopChannel.value = false
   selectedDesktopCategoryId.value = ''
   selectedDesktopChannelId.value = ''
   desktopTaskCategoryId.value = ''
@@ -903,10 +1134,12 @@ watch(desktopChannelCards, (cards) => {
   if (!cards.some((card) => card.id === selectedDesktopChannelId.value)) {
     selectedDesktopChannelId.value = cards[0]?.id || ''
   }
+  if (!cards.some((card) => card.id === selectedDesktopChannelRadioId.value)) {
+    selectedDesktopChannelRadioId.value = selectedDesktopChannelId.value || cards[0]?.id || ''
+  }
 })
 
 watch(selectedDesktopCategory, (category) => {
-  categoryEditorName.value = category?.name || ''
   adminChannelForm.value.parentId = category?.id || ''
   if (category) {
     desktopTaskCategoryId.value = category.id
@@ -914,8 +1147,6 @@ watch(selectedDesktopCategory, (category) => {
 })
 
 watch(selectedDesktopChannel, (channel) => {
-  channelEditorName.value = channel?.name || ''
-  channelEditorCoverImageDataUrl.value = channel?.coverImageDataUrl || ''
   if (channel) {
     desktopTaskChannelId.value = channel.id
     selectedFolderId.value = channel.id
@@ -1055,9 +1286,6 @@ onBeforeUnmount(() => {
             <div class="mobile-setting-card">
               <p class="eyebrow">工具</p>
               <div class="auth-actions">
-                <button type="button" class="ghost-button" @click="openVocabularyModal">
-                  生词本 {{ vocabularyCount ? `(${vocabularyCount})` : '' }}
-                </button>
                 <button type="button" class="ghost-button" @click="loadLibrary" :disabled="isLoading">
                   {{ isLoading ? '刷新中...' : '刷新内容' }}
                 </button>
@@ -1112,6 +1340,49 @@ onBeforeUnmount(() => {
           </section>
         </section>
 
+        <section v-if="isMobileLayout && mobileTab === 'vocabulary'" class="dashboard-grid mobile-profile-grid">
+          <section class="panel-card mobile-profile-card">
+            <div class="panel-header">
+              <div>
+                <p class="eyebrow">生词本</p>
+                <h2>{{ vocabularyCount ? `${vocabularyCount} 个生词` : '还没有生词' }}</h2>
+              </div>
+            </div>
+
+            <p v-if="isLoadingVocabulary" class="empty-state">加载中...</p>
+            <p v-else-if="vocabulary.length === 0" class="empty-state">你还没有加入任何生词，长按字幕里的词就可以加入。</p>
+
+            <div v-else class="vocabulary-date-list">
+              <article v-for="group in groupedVocabulary" :key="group.dateKey" class="vocabulary-date-group">
+                <button type="button" class="vocabulary-date-toggle" @click="toggleVocabularyDate(group.dateKey)">
+                  <span>
+                    <strong>{{ group.label }}</strong>
+                    <small>{{ group.items.length }} 个生词</small>
+                  </span>
+                  <span class="task-open-hint">{{ expandedVocabularyDates.includes(group.dateKey) ? '收起' : '展开' }}</span>
+                </button>
+
+                <div v-if="expandedVocabularyDates.includes(group.dateKey)" class="vocabulary-list">
+                  <button
+                    v-for="item in group.items"
+                    :key="item.id"
+                    type="button"
+                    class="vocabulary-item vocabulary-item-button"
+                    @click="openVocabularyItem(item)"
+                  >
+                    <div class="vocabulary-item-top">
+                      <strong>{{ item.word }}</strong>
+                      <span class="task-open-hint">查看解释</span>
+                    </div>
+                    <p v-if="item.reading" class="vocabulary-reading">{{ item.reading }}</p>
+                    <p class="vocabulary-meta">{{ item.sentence || '点击后查看完整解释' }}</p>
+                  </button>
+                </div>
+              </article>
+            </div>
+          </section>
+        </section>
+
         <template v-if="!isMobileLayout || mobileTab === 'podcast'">
         <section v-if="isMobileLayout" class="panel-card mobile-podcast-shell">
           <template v-if="mobilePodcastLevel === 'categories'">
@@ -1128,6 +1399,7 @@ onBeforeUnmount(() => {
                 :key="category.id"
                 type="button"
                 class="folder-item mobile-category-card"
+                :style="buildFolderCardStyle(category)"
                 @click="openMobileCategory(category.id)"
               >
                 <span class="folder-item-copy">
@@ -1154,6 +1426,7 @@ onBeforeUnmount(() => {
                 :key="channel.id"
                 type="button"
                 class="task-item mobile-task-item"
+                :style="buildFolderCardStyle(channel)"
                 @click="openMobileChannel(channel.id)"
               >
                 <div class="task-item-topline">
@@ -1202,12 +1475,52 @@ onBeforeUnmount(() => {
         <section v-if="!isMobileLayout" class="hero-card dashboard-hero desktop-admin-hero">
           <div>
             <p class="eyebrow">桌面配置台</p>
-            <h1>电脑端只做广播配置</h1>
+            <h1>电脑端只做分类和广播配置</h1>
             <p class="hero-text">
-              这里专门配置大类名、二类广播名、广播封面，以及把新的链接放进指定二类下面。
+              左边直接用和客户端接近的结构来管理大类和二类，右边只负责批量导入广播内容。
             </p>
           </div>
           <div class="session-actions">
+            <div class="language-switcher desktop-language-switcher">
+              <button
+                type="button"
+                class="switch-button"
+                :class="{ active: preferredContentLanguage === 'ja' }"
+                :disabled="isUpdatingProfile"
+                @click="handleProfileLanguageChange({ target: { value: 'ja' } })"
+              >
+                编辑日文
+              </button>
+              <button
+                type="button"
+                class="switch-button"
+                :class="{ active: preferredContentLanguage === 'en' }"
+                :disabled="isUpdatingProfile"
+                @click="handleProfileLanguageChange({ target: { value: 'en' } })"
+              >
+                编辑英文
+              </button>
+            </div>
+            <button type="button" class="ghost-button" @click="submitAdminCategory" :disabled="isCreatingCategory">
+              {{ isCreatingCategory ? '添加中...' : '添加默认分类' }}
+            </button>
+            <button type="button" class="ghost-button" @click="submitAdminChannel" :disabled="isCreatingChannel || !selectedDesktopCategoryId">
+              {{ isCreatingChannel ? '添加中...' : '添加默认二类' }}
+            </button>
+            <button
+              type="button"
+              class="ghost-button"
+              @click="openSelectedDesktopFolder"
+              :disabled="!selectedDesktopCategoryRadioId && !selectedDesktopChannelRadioId"
+            >
+              打开文件夹
+            </button>
+            <button type="button" class="ghost-button" @click="openFolderEditor('category')" :disabled="!desktopSelectedCategoryForEdit">
+              编辑一类
+            </button>
+            <button type="button" class="ghost-button" @click="openFolderEditor('channel')" :disabled="!desktopSelectedChannelForEdit">
+              编辑二类
+            </button>
             <button type="button" class="ghost-button" @click="openVocabularyModal">
               生词本 {{ vocabularyCount ? `(${vocabularyCount})` : '' }}
             </button>
@@ -1221,164 +1534,124 @@ onBeforeUnmount(() => {
         </section>
 
         <section class="workspace-grid desktop-config-grid">
-          <section class="panel-card scroll-panel">
+          <section class="panel-card scroll-panel desktop-library-panel">
             <div class="panel-header">
               <div>
-                <p class="eyebrow">一类大类</p>
-                <h2>{{ mobilePreferredLanguageLabel }}</h2>
+                <p class="eyebrow">广播目录</p>
+                <h2>{{ desktopLibraryLevel === 'channels' ? (selectedDesktopCategory?.name || mobilePreferredLanguageLabel) : mobilePreferredLanguageLabel }}</h2>
               </div>
-              <div class="summary-pill">
-                <strong>{{ categoryFolders.length }}</strong>
-                <span>个大类</span>
+              <div class="panel-header-actions">
+                <div class="summary-pill">
+                  <strong>{{ desktopLibraryLevel === 'channels' ? desktopChannelCards.length : categoryFolders.length }}</strong>
+                  <span>{{ desktopLibraryLevel === 'channels' ? '个二类' : '个目录' }}</span>
+                </div>
+                <button v-if="desktopLibraryLevel === 'channels'" type="button" class="ghost-button" @click="backDesktopFolderLevel">
+                  返回上一级
+                </button>
               </div>
             </div>
 
             <p v-if="errorMessage" class="error-banner">{{ errorMessage }}</p>
             <p v-if="successMessage" class="success-banner">{{ successMessage }}</p>
 
-            <div class="folder-list">
-              <button
-                v-for="category in categoryFolders"
-                :key="category.id"
-                type="button"
-                class="folder-item"
-                :class="{ active: category.id === selectedDesktopCategoryId }"
-                @click="openDesktopCategory(category.id)"
-              >
-                <span class="folder-item-copy">
-                  <strong>{{ category.name }}</strong>
-                  <small>{{ desktopCategoryTaskCount(category.id) }} 条广播内容</small>
-                </span>
-              </button>
-            </div>
-
-            <div v-if="isAdmin" class="desktop-admin-stack">
-              <form class="task-form" @submit.prevent="submitAdminCategory">
-                <label>
-                  <span>新增大类名</span>
-                  <input v-model.trim="adminCategoryForm.name" type="text" placeholder="比如：日文听力 / 英文播客" />
-                </label>
-                <label>
-                  <span>内容语言</span>
-                  <select v-model="adminCategoryForm.contentLanguage">
-                    <option value="ja">日文</option>
-                    <option value="en">英文</option>
-                  </select>
-                </label>
-                <button type="submit" class="ghost-button" :disabled="isCreatingCategory">
-                  {{ isCreatingCategory ? '创建中...' : '创建大类' }}
-                </button>
-              </form>
-
-              <form v-if="selectedDesktopCategory" class="task-form" @submit.prevent="updateSelectedCategory">
-                <label>
-                  <span>修改当前大类名</span>
-                  <input v-model.trim="categoryEditorName" type="text" placeholder="修改当前大类名称" />
-                </label>
-                <div class="inline-button-row">
-                  <button type="submit" class="ghost-button">保存大类</button>
-                  <button type="button" class="danger-button inline-danger-button" @click="removeDesktopCategory">
-                    删除大类
-                  </button>
+            <div class="desktop-folder-stack">
+              <section class="desktop-folder-group">
+                <div class="desktop-group-head">
+                  <span>{{ desktopLibraryLevel === 'channels' ? '当前一类里的二类广播' : '一类大类' }}</span>
+                  <strong>{{ desktopLibraryLevel === 'channels' ? desktopChannelCards.length : categoryFolders.length }}</strong>
                 </div>
-              </form>
-            </div>
-          </section>
+                <div class="folder-list desktop-compact-list">
+                  <template v-if="desktopLibraryLevel === 'categories'">
+                    <button
+                      v-for="category in desktopVisibleCategories"
+                      :key="category.id"
+                      type="button"
+                      class="folder-item desktop-folder-item"
+                      :class="{ active: category.id === selectedDesktopCategoryId }"
+                      :style="buildFolderCardStyle(category)"
+                      @click="openDesktopCategory(category.id)"
+                    >
+                      <span class="folder-item-select" @click.stop="openDesktopCategory(category.id)">
+                        <span class="folder-item-radio" :class="{ active: selectedDesktopCategoryRadioId === category.id }"></span>
+                      </span>
+                      <span class="folder-item-copy">
+                        <strong>{{ category.name }}</strong>
+                        <small>{{ desktopCategoryTaskCount(category.id) }} 条广播内容</small>
+                      </span>
+                    </button>
+                  </template>
 
-          <section class="panel-card scroll-panel">
-            <div class="panel-header">
-              <div>
-                <p class="eyebrow">二类广播</p>
-                <h2>{{ selectedDesktopCategory?.name || '先选左侧大类' }}</h2>
-              </div>
-              <div class="summary-pill">
-                <strong>{{ desktopChannelCards.length }}</strong>
-                <span>个广播</span>
-              </div>
-            </div>
+                  <template v-else>
+                    <button
+                      v-if="selectedDesktopCategory"
+                      type="button"
+                      class="folder-item desktop-folder-item current-folder-card"
+                      :class="{ active: true }"
+                      :style="buildFolderCardStyle(selectedDesktopCategory)"
+                    >
+                      <span class="folder-item-select">
+                        <span class="folder-item-radio active"></span>
+                      </span>
+                      <span class="folder-item-copy">
+                        <strong>{{ selectedDesktopCategory.name }}</strong>
+                        <small>{{ desktopCategoryTaskCount(selectedDesktopCategory.id) }} 条广播内容</small>
+                      </span>
+                    </button>
 
-            <div v-if="!selectedDesktopCategory" class="empty-state">先在左边选一个大类，再配置二类广播。</div>
-            <div v-else class="task-list desktop-channel-list">
-              <button
-                v-for="channel in desktopChannelCards"
-                :key="channel.id"
-                type="button"
-                class="task-item desktop-channel-card"
-                :class="{ active: channel.id === selectedDesktopChannelId }"
-                :style="buildCoverCardStyle(channel.coverImageDataUrl)"
-                @click="openDesktopChannel(channel.id)"
-              >
-                <div class="task-item-topline">
-                  <span class="task-status">{{ channel.taskCount }} 条内容</span>
-                  <span class="task-open-hint">当前二类</span>
+                    <p v-if="desktopChannelCards.length === 0" class="empty-state compact-empty-state">这个一类下面还没有二类广播。</p>
+                    <div v-else class="task-list desktop-compact-list nested-channel-list">
+                      <button
+                        v-for="channel in desktopChannelCards"
+                        :key="channel.id"
+                        type="button"
+                        class="task-item desktop-channel-card"
+                        :class="{ active: channel.id === selectedDesktopChannelId }"
+                        :style="buildFolderCardStyle(channel)"
+                        @click="openDesktopChannel(channel.id)"
+                      >
+                        <span class="folder-item-select" @click.stop="openDesktopChannel(channel.id)">
+                          <span class="folder-item-radio" :class="{ active: selectedDesktopChannelRadioId === channel.id }"></span>
+                        </span>
+                        <div class="desktop-channel-copy">
+                          <div class="task-item-topline">
+                            <span class="task-status">{{ channel.taskCount }} 条内容</span>
+                          </div>
+                          <strong>{{ channel.name }}</strong>
+                          <small>{{ channel.latestTaskTitle || '还没有广播内容' }}</small>
+                        </div>
+                      </button>
+                    </div>
+                  </template>
                 </div>
-                <strong>{{ channel.name }}</strong>
-                <small>{{ channel.latestTaskTitle || '还没有广播内容' }}</small>
-              </button>
-            </div>
-
-            <div v-if="isAdmin && selectedDesktopCategory" class="desktop-admin-stack">
-              <form class="task-form" @submit.prevent="submitAdminChannel">
-                <label>
-                  <span>新增二类广播名</span>
-                  <input v-model.trim="adminChannelForm.name" type="text" placeholder="比如：NHK / BBC / 某个主播" />
-                </label>
-                <label>
-                  <span>放到哪个大类下面</span>
-                  <select v-model="adminChannelForm.parentId">
-                    <option v-for="folder in categoryFolders" :key="folder.id" :value="folder.id">{{ folder.name }}</option>
-                  </select>
-                </label>
-                <label class="cover-upload-field">
-                  <span>广播封面</span>
-                  <input type="file" accept="image/*" @change="handleAdminChannelCoverSelected" />
-                </label>
-                <div v-if="adminChannelForm.coverImageDataUrl" class="desktop-cover-preview">
-                  <img :src="adminChannelForm.coverImageDataUrl" alt="channel preview" />
-                </div>
-                <button type="submit" class="ghost-button" :disabled="isCreatingChannel || !categoryFolders.length">
-                  {{ isCreatingChannel ? '创建中...' : '创建二类广播' }}
-                </button>
-              </form>
-
-              <form v-if="selectedDesktopChannel" class="task-form" @submit.prevent="updateSelectedChannel">
-                <label>
-                  <span>修改当前广播名</span>
-                  <input v-model.trim="channelEditorName" type="text" placeholder="修改当前广播名称" />
-                </label>
-                <label class="cover-upload-field">
-                  <span>更新广播封面</span>
-                  <input type="file" accept="image/*" @change="handleChannelEditorCoverSelected" />
-                </label>
-                <div v-if="channelEditorCoverImageDataUrl" class="desktop-cover-preview">
-                  <img :src="channelEditorCoverImageDataUrl" alt="selected channel cover" />
-                </div>
-                <div class="inline-button-row">
-                  <button type="submit" class="ghost-button">保存广播</button>
-                  <button type="button" class="danger-button inline-danger-button" @click="removeDesktopChannel">
-                    删除广播
-                  </button>
-                </div>
-              </form>
+              </section>
             </div>
           </section>
 
           <section class="panel-card scroll-panel">
             <div class="panel-header">
               <div>
-                <p class="eyebrow">广播内容</p>
-                <h2>{{ selectedDesktopChannel?.name || '先选中间二类广播' }}</h2>
+                <p class="eyebrow">{{ showDesktopChannelPanel ? '广播内容' : '添加广播内容' }}</p>
+                <h2>{{ selectedDesktopChannel?.name || '先选二类，再在这里添加录音' }}</h2>
               </div>
               <div class="summary-pill">
-                <strong>{{ desktopEpisodeTasks.length }}</strong>
-                <span>条内容</span>
+                <strong>{{ showDesktopChannelPanel ? desktopEpisodeTasks.length : desktopChannelOptions.length }}</strong>
+                <span>{{ showDesktopChannelPanel ? '条内容' : '个可选二类' }}</span>
               </div>
             </div>
 
             <form class="task-form desktop-task-form" @submit.prevent="submitDesktopTask">
               <label class="form-span-2">
                 <span>媒体链接</span>
-                <input v-model.trim="form.mediaUrl" type="url" placeholder="https://example.com/video" required />
+                <textarea v-model.trim="form.mediaUrl" rows="3" placeholder="单条链接直接贴这里"></textarea>
+              </label>
+              <label class="form-span-2">
+                <span>批量链接</span>
+                <textarea v-model="bulkMediaInput" rows="7" placeholder="支持多条链接，一行一个，也支持上传 yml / yaml 文件"></textarea>
+              </label>
+              <label class="cover-upload-field form-span-2">
+                <span>批量文件导入</span>
+                <input type="file" accept=".yml,.yaml,.txt" @change="handleBatchFileSelected" />
+                <small v-if="batchFileName">{{ batchFileName }}</small>
               </label>
               <label>
                 <span>源语言</span>
@@ -1412,10 +1685,13 @@ onBeforeUnmount(() => {
                 <button type="submit" class="primary-button" :disabled="isSubmitting || !desktopTaskChannelId">
                   {{ isSubmitting ? '处理中...' : '添加到这个广播' }}
                 </button>
+                <button type="button" class="ghost-button" :disabled="isSubmitting || !desktopTaskChannelId || parsedBulkLinks.length === 0" @click="submitDesktopBatchTasks">
+                  {{ isSubmitting ? '处理中...' : `批量处理 ${parsedBulkLinks.length} 条链接` }}
+                </button>
               </div>
             </form>
 
-            <p v-if="!selectedDesktopChannelId" class="empty-state">先在中间选一个二类广播。</p>
+            <p v-if="!showDesktopChannelPanel" class="empty-state">右边保留添加入口。只有打开某个二类后，下面才会显示这个二类里的音频内容。</p>
             <p v-else-if="desktopEpisodeTasks.length === 0" class="empty-state">这个广播下面还没有内容，直接在上面添加就行。</p>
 
             <div v-else class="task-list">
@@ -1500,6 +1776,46 @@ onBeforeUnmount(() => {
       </template>
     </template>
 
+    <div v-if="showFolderEditorModal" class="overlay-shell" @click.self="showFolderEditorModal = false">
+      <section class="overlay-card word-dialog folder-editor-modal">
+        <div class="panel-header">
+          <div>
+            <p class="eyebrow">{{ folderEditorMode === 'category' ? '编辑一类大类' : '编辑二类广播' }}</p>
+            <h2>{{ folderEditorForm.name || '未命名' }}</h2>
+          </div>
+          <button type="button" class="ghost-button" @click="showFolderEditorModal = false">关闭</button>
+        </div>
+
+        <form class="task-form" @submit.prevent="saveFolderEditor">
+          <label>
+            <span>名称</span>
+            <input v-model.trim="folderEditorForm.name" type="text" placeholder="修改名称" />
+          </label>
+          <label v-if="folderEditorMode === 'channel'">
+            <span>归属一类大类</span>
+            <select v-model="folderEditorForm.parentId">
+              <option v-for="folder in categoryFolders" :key="folder.id" :value="folder.id">{{ folder.name }}</option>
+            </select>
+          </label>
+          <label class="cover-upload-field">
+            <span>封面图片</span>
+            <input type="file" accept="image/*" @change="handleFolderEditorCoverSelected" />
+          </label>
+          <label>
+            <span>封面透明度 {{ folderEditorForm.coverOpacity }}%</span>
+            <input v-model="folderEditorForm.coverOpacity" type="range" min="0" max="100" step="5" />
+          </label>
+          <div v-if="folderEditorForm.coverImageDataUrl" class="desktop-cover-preview">
+            <img :src="folderEditorForm.coverImageDataUrl" :style="{ opacity: 1 - Number(folderEditorForm.coverOpacity || 50) / 100 }" alt="folder cover preview" />
+          </div>
+          <div class="inline-button-row">
+            <button type="submit" class="ghost-button">保存</button>
+            <button type="button" class="danger-button inline-danger-button" @click="removeFolderFromEditor">删除</button>
+          </div>
+        </form>
+      </section>
+    </div>
+
     <div v-if="showVocabularyModal" class="overlay-shell" @click.self="showVocabularyModal = false">
       <section class="overlay-card vocabulary-modal">
         <div class="panel-header">
@@ -1513,19 +1829,67 @@ onBeforeUnmount(() => {
         <p v-if="isLoadingVocabulary" class="empty-state">加载中...</p>
         <p v-else-if="vocabulary.length === 0" class="empty-state">你还没有加入任何生词，长按字幕里的词就可以加入。</p>
 
-        <div v-else class="vocabulary-list">
-          <article v-for="item in vocabulary" :key="item.id" class="vocabulary-item">
-            <div class="vocabulary-item-top">
-              <strong>{{ item.word }}</strong>
-              <button type="button" class="danger-button inline-danger-button" @click="handleRemoveVocabulary(item.id)">
-                删除
+        <div v-else class="vocabulary-date-list">
+          <article v-for="group in groupedVocabulary" :key="group.dateKey" class="vocabulary-date-group">
+            <button type="button" class="vocabulary-date-toggle" @click="toggleVocabularyDate(group.dateKey)">
+              <span>
+                <strong>{{ group.label }}</strong>
+                <small>{{ group.items.length }} 个生词</small>
+              </span>
+              <span class="task-open-hint">{{ expandedVocabularyDates.includes(group.dateKey) ? '收起' : '展开' }}</span>
+            </button>
+
+            <div v-if="expandedVocabularyDates.includes(group.dateKey)" class="vocabulary-list">
+              <button
+                v-for="item in group.items"
+                :key="item.id"
+                type="button"
+                class="vocabulary-item vocabulary-item-button"
+                @click="openVocabularyItem(item)"
+              >
+                <div class="vocabulary-item-top">
+                  <strong>{{ item.word }}</strong>
+                  <span class="task-open-hint">查看解释</span>
+                </div>
+                <p v-if="item.reading" class="vocabulary-reading">{{ item.reading }}</p>
+                <p class="vocabulary-meta">{{ item.sentence || '点击后查看完整解释' }}</p>
               </button>
             </div>
-            <p v-if="item.reading" class="vocabulary-reading">{{ item.reading }}</p>
-            <p class="vocabulary-meaning">{{ item.meaning }}</p>
-            <p v-if="item.usage" class="vocabulary-meta">{{ item.usage }}</p>
-            <p v-if="item.example" class="vocabulary-meta">{{ item.example }}</p>
           </article>
+        </div>
+      </section>
+    </div>
+
+    <div v-if="selectedVocabularyItem" class="overlay-shell" @click.self="selectedVocabularyItem = null">
+      <section class="overlay-card word-dialog">
+        <div class="panel-header">
+          <div>
+            <p class="eyebrow">生词解释</p>
+            <h2>{{ selectedVocabularyItem.word }}</h2>
+          </div>
+          <button type="button" class="ghost-button" @click="selectedVocabularyItem = null">关闭</button>
+        </div>
+
+        <div class="word-dialog-body">
+          <p v-if="selectedVocabularyItem.reading" class="word-dialog-reading">{{ selectedVocabularyItem.reading }}</p>
+          <div class="word-dialog-block">
+            <span>意思</span>
+            <p>{{ selectedVocabularyItem.meaning || '暂无释义' }}</p>
+          </div>
+          <div class="word-dialog-block">
+            <span>用法</span>
+            <p>{{ selectedVocabularyItem.usage || '建议结合上下文一起记忆。' }}</p>
+          </div>
+          <div class="word-dialog-block">
+            <span>例句</span>
+            <p>{{ selectedVocabularyItem.example || selectedVocabularyItem.sentence || '暂无例句' }}</p>
+          </div>
+        </div>
+
+        <div class="word-dialog-actions">
+          <button type="button" class="danger-button inline-danger-button" @click="handleRemoveVocabulary(selectedVocabularyItem.id)">
+            删除这个生词
+          </button>
         </div>
       </section>
     </div>
@@ -1538,6 +1902,14 @@ onBeforeUnmount(() => {
         @click="mobileTab = 'podcast'"
       >
         Podcast
+      </button>
+      <button
+        type="button"
+        class="mobile-bottom-tab"
+        :class="{ active: mobileTab === 'vocabulary' }"
+        @click="mobileTab = 'vocabulary'"
+      >
+        生词本
       </button>
       <button
         type="button"
