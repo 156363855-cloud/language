@@ -1,14 +1,45 @@
 services:
-  backend:
+  mysql:
+    image: mysql:8.4
+    container_name: lingualink-mysql
+    environment:
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-lingualink}
+      MYSQL_USER: ${MYSQL_USER:-lingualink}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-lingualink}
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-root}
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
+    volumes:
+      - ./storage/mysql:/var/lib/mysql
+    ports:
+      - "3306:3306"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-uroot", "-p${MYSQL_ROOT_PASSWORD:-root}"]
+      interval: 20s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
+  backend-api:
     build:
       context: ./backend
-    container_name: lingua-link-backend
+      dockerfile: Dockerfile.api
+    container_name: lingualink-backend-api
     environment:
-      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
+      APP_PROCESSING_ENABLED: "false"
+      SPRING_DATASOURCE_URL: ${SPRING_DATASOURCE_URL:-jdbc:mysql://mysql:3306/${MYSQL_DATABASE:-lingualink}?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Tokyo&allowPublicKeyRetrieval=true&useSSL=false}
+      SPRING_DATASOURCE_USERNAME: ${SPRING_DATASOURCE_USERNAME:-lingualink}
+      SPRING_DATASOURCE_PASSWORD: ${SPRING_DATASOURCE_PASSWORD:-lingualink}
+      SPRING_JPA_HIBERNATE_DDL_AUTO: ${SPRING_JPA_HIBERNATE_DDL_AUTO:-update}
     volumes:
-      - ./backend/runtime:/app/backend/runtime
+      - ./backend/runtime-api:/app/backend/runtime
     ports:
       - "8080:8080"
+    depends_on:
+      mysql:
+        condition: service_healthy
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8080/actuator/health"]
@@ -17,6 +48,64 @@ services:
       retries: 5
       start_period: 40s
 
+  backend-worker:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile.worker
+    container_name: lingualink-backend-worker
+    environment:
+      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
+      APP_PROCESSING_ENABLED: "true"
+      APP_CLOUD_API_BASE_URL: ${APP_CLOUD_API_BASE_URL:-http://backend-api:8080/api}
+      SPRING_DATASOURCE_URL: ${SPRING_DATASOURCE_URL:-jdbc:mysql://mysql:3306/${MYSQL_DATABASE:-lingualink}?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Tokyo&allowPublicKeyRetrieval=true&useSSL=false}
+      SPRING_DATASOURCE_USERNAME: ${SPRING_DATASOURCE_USERNAME:-lingualink}
+      SPRING_DATASOURCE_PASSWORD: ${SPRING_DATASOURCE_PASSWORD:-lingualink}
+      SPRING_JPA_HIBERNATE_DDL_AUTO: ${SPRING_JPA_HIBERNATE_DDL_AUTO:-update}
+      APP_STORAGE_ENDPOINT: ${APP_STORAGE_ENDPOINT:-}
+      APP_STORAGE_PUBLIC_BASE_URL: ${APP_STORAGE_PUBLIC_BASE_URL:-}
+      APP_STORAGE_ACCESS_KEY: ${APP_STORAGE_ACCESS_KEY:-}
+      APP_STORAGE_SECRET_KEY: ${APP_STORAGE_SECRET_KEY:-}
+      APP_STORAGE_BUCKET: ${APP_STORAGE_BUCKET:-lingualink-assets}
+      APP_STORAGE_OCI_NAMESPACE: ${APP_STORAGE_OCI_NAMESPACE:-}
+      APP_STORAGE_OCI_REGION: ${APP_STORAGE_OCI_REGION:-}
+      APP_STORAGE_OCI_TENANCY: ${APP_STORAGE_OCI_TENANCY:-}
+      APP_STORAGE_OCI_USER: ${APP_STORAGE_OCI_USER:-}
+      APP_STORAGE_OCI_FINGERPRINT: ${APP_STORAGE_OCI_FINGERPRINT:-}
+      APP_STORAGE_OCI_KEY_FILE: ${APP_STORAGE_OCI_KEY_FILE:-}
+      APP_CLOUD_IMPORT_TOKEN: ${APP_CLOUD_IMPORT_TOKEN:-}
+      SSH_PASSWORD: ${SSH_PASSWORD:-}
+    volumes:
+      - ./backend/runtime-worker:/app/backend/runtime
+      - ./secrets:/app/secrets:ro
+    ports:
+      - "8081:8080"
+    depends_on:
+      mysql:
+        condition: service_healthy
+      backend-api:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8080/actuator/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 40s
+
+  minio:
+    image: minio/minio:RELEASE.2025-04-22T22-12-26Z
+    container_name: lingualink-minio
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${APP_STORAGE_ACCESS_KEY:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${APP_STORAGE_SECRET_KEY:-minioadmin}
+    volumes:
+      - ./storage/minio:/data
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    restart: unless-stopped
+
   frontend:
     build:
       context: ./frontend
@@ -24,6 +113,8 @@ services:
     ports:
       - "5173:80"
     depends_on:
-      backend:
+      backend-api:
+        condition: service_healthy
+      backend-worker:
         condition: service_healthy
     restart: unless-stopped

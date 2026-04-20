@@ -18,6 +18,7 @@ DEEPSEEK_TRANSLATE_MODEL = "deepseek-chat"
 LOCAL_SEGMENT_SECONDS = 180
 LOCAL_TRANSCRIBE_MODEL = "small"
 TRANSLATION_BATCH_SIZE = 20
+MAX_AUTO_TRANSLATION_SECONDS = 60 * 60
 
 
 def looks_like_translation_error(text: str | None) -> bool:
@@ -48,6 +49,14 @@ def parse_args() -> argparse.Namespace:
 
 
 def download_audio(media_url: str, task_dir: Path) -> tuple[str, Path]:
+    existing_audio = task_dir / "source.mp3"
+    if not existing_audio.exists():
+        alternatives = sorted(task_dir.glob("source.*"))
+        if alternatives:
+            existing_audio = alternatives[0]
+    if existing_audio.exists():
+        return media_url, existing_audio
+
     output_template = str(task_dir / "source.%(ext)s")
     options = {
         "format": "bestaudio/best",
@@ -79,6 +88,9 @@ def download_audio(media_url: str, task_dir: Path) -> tuple[str, Path]:
 
 def split_audio_locally(audio_path: Path, chunk_directory: Path) -> list[Path]:
     chunk_directory.mkdir(parents=True, exist_ok=True)
+    existing = sorted(chunk_directory.glob("chunk_*.wav"))
+    if existing:
+        return existing
     output_pattern = chunk_directory / "chunk_%03d.wav"
     subprocess.run(
         [
@@ -262,6 +274,8 @@ def translate_segments_locally(segments: list[dict], target_languages: list[str]
 
 
 def normalize_audio(audio_path: Path, normalized_path: Path) -> Path:
+    if normalized_path.exists() and normalized_path.stat().st_size > 0:
+        return normalized_path
     subprocess.run(
         [
             "ffmpeg",
@@ -281,11 +295,31 @@ def normalize_audio(audio_path: Path, normalized_path: Path) -> Path:
     return normalized_path
 
 
+def get_audio_duration_seconds(audio_path: Path) -> float:
+    result = subprocess.run(
+        [
+            "ffprobe",
+            "-v",
+            "error",
+            "-show_entries",
+            "format=duration",
+            "-of",
+            "default=noprint_wrappers=1:nokey=1",
+            str(audio_path),
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return float((result.stdout or "0").strip() or "0")
+
+
 def main() -> int:
     args = parse_args()
     deepseek_api_key = os.getenv("DEEPSEEK_API_KEY")
 
     require_binary("ffmpeg")
+    require_binary("ffprobe")
     require_binary("yt-dlp")
 
     task_dir = Path(args.output_file).resolve().parent
@@ -293,11 +327,14 @@ def main() -> int:
 
     title, audio_path = download_audio(args.media_url, task_dir)
     normalized_path = normalize_audio(audio_path, task_dir / "normalized.wav")
+    audio_duration_seconds = get_audio_duration_seconds(normalized_path)
     target_languages = [item.strip() for item in args.target_languages.split(",") if item.strip()]
+    if audio_duration_seconds > MAX_AUTO_TRANSLATION_SECONDS:
+        target_languages = []
     segments = transcribe_audio_locally(normalized_path, args.source_language, task_dir)
-    if deepseek_api_key:
+    if target_languages and deepseek_api_key:
         segments = translate_segments_with_deepseek(deepseek_api_key, segments, target_languages)
-    else:
+    elif target_languages:
         segments = translate_segments_locally(segments, target_languages)
 
     payload = {

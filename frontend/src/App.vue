@@ -1,6 +1,8 @@
 <script setup>
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { Camera, CameraResultType, CameraSource } from '@capacitor/camera'
 import SubtitlePlayer from './components/SubtitlePlayer.vue'
+import VocabularyStudyPanel from './components/VocabularyStudyPanel.vue'
 import {
   addVocabulary,
   clearAuthToken,
@@ -13,6 +15,7 @@ import {
   fetchTasks,
   fetchVocabulary,
   getAuthToken,
+  hydrateAuthToken,
   login,
   logout,
   moveTask,
@@ -24,35 +27,260 @@ import {
   updateProfile,
   updateFolder
 } from './api/tasks'
+import {
+  cleanupExpiredAudioCache,
+  clearCachedLibrarySnapshot,
+  clearCachedProfile,
+  clearCachedVocabulary,
+  loadCachedLibrarySnapshot,
+  loadCachedProfile,
+  loadCachedVocabulary,
+  saveCachedLibrarySnapshot,
+  saveCachedProfile,
+  saveCachedVocabulary
+} from './services/mobileCache'
+import { Capacitor } from '@capacitor/core'
+
+const INTERFACE_LANGUAGE_KEY = 'lingualink_interface_language'
 
 const languageOptions = [
-  { label: '中文', value: 'zh' },
-  { label: '日文', value: 'ja' },
-  { label: '英文', value: 'en' }
+  { value: 'zh', labels: { zh: '中文', ja: '中国語', en: 'Chinese' } },
+  { value: 'ja', labels: { zh: '日文', ja: '日本語', en: 'Japanese' } },
+  { value: 'en', labels: { zh: '英文', ja: '英語', en: 'English' } }
 ]
+
+const languageLabelMap = {
+  zh: '中',
+  ja: '日',
+  en: '英'
+}
+
+const uiMessages = {
+  zh: {
+    account: '账号',
+    loginTitle: '登录后使用生词本和词语解释',
+    registerTitle: '先创建一个本地账号',
+    loginHint: '目前先用邮箱和密码登录，不做验证码。生词本会绑定到当前账号下面。',
+    interfaceLanguage: '界面语言',
+    email: '邮箱',
+    password: '密码',
+    passwordPlaceholder: '至少 6 位',
+    submitting: '提交中...',
+    login: '登录',
+    registerAndLogin: '注册并登录',
+    goRegister: '去注册',
+    goLogin: '已有账号，去登录',
+    currentAccount: '当前账号',
+    vocabulary: '生词本',
+    vocabularySettings: '生词本设置',
+    refreshContent: '刷新内容',
+    refreshing: '刷新中...',
+    logout: '退出登录',
+    me: '我的',
+    uploadAvatar: '上传头像',
+    settings: '设置',
+    wantToListen: '想要听广播',
+    currentShowPrefix: '当前会显示',
+    currentShowSuffix: '内容。',
+    tools: '工具',
+    feedback: '反馈',
+    feedbackHint: '如果你想提建议或者反馈问题，可以直接加我微信：',
+    radioManagement: '广播管理',
+    createCategory: '创建大类',
+    createChannel: '创建广播',
+    categoryLanguage: '内容语言',
+    parentCategory: '归属大类',
+    categoryPanel: '广播大类',
+    podcastList: '广播列表',
+    audioList: '音频列表',
+    enterPodcast: '进入广播',
+    openAudio: '打开音频',
+    back: '返回',
+    noChannels: '这个大类下面还没有广播。',
+    noAudios: '这个广播下面还没有音频。',
+    podcastTab: 'Podcast',
+    vocabularyTab: '生词本',
+    myTab: '我的',
+    loading: '加载中...',
+    noVocabulary: '你还没有加入任何生词，长按字幕里的词就可以加入。',
+    expand: '展开',
+    collapse: '收起',
+    viewExplain: '查看解释',
+    close: '关闭',
+    language: 'Language',
+    closeTranslation: '关闭翻译'
+  },
+  ja: {
+    account: 'アカウント',
+    loginTitle: 'ログインして単語帳と単語解説を使う',
+    registerTitle: '先にローカルアカウントを作成する',
+    loginHint: '今はメールアドレスとパスワードでログインします。認証コードはまだありません。単語帳は現在のアカウントに紐づきます。',
+    interfaceLanguage: '表示言語',
+    email: 'メール',
+    password: 'パスワード',
+    passwordPlaceholder: '6文字以上',
+    submitting: '送信中...',
+    login: 'ログイン',
+    registerAndLogin: '登録してログイン',
+    goRegister: '新規登録へ',
+    goLogin: 'すでにアカウントあり、ログインへ',
+    currentAccount: '現在のアカウント',
+    vocabulary: '単語帳',
+    vocabularySettings: '単語帳設定',
+    refreshContent: '内容を更新',
+    refreshing: '更新中...',
+    logout: 'ログアウト',
+    me: 'マイ',
+    uploadAvatar: 'アイコンをアップロード',
+    settings: '設定',
+    wantToListen: '聞きたい放送',
+    currentShowPrefix: '現在は',
+    currentShowSuffix: 'の内容を表示します。',
+    tools: 'ツール',
+    feedback: 'フィードバック',
+    feedbackHint: '提案や不具合があれば、WeChatで連絡してください：',
+    radioManagement: '番組管理',
+    createCategory: 'カテゴリ作成',
+    createChannel: '番組作成',
+    categoryLanguage: '内容言語',
+    parentCategory: '親カテゴリ',
+    categoryPanel: 'カテゴリ一覧',
+    podcastList: '番組一覧',
+    audioList: '音声一覧',
+    enterPodcast: '番組へ',
+    openAudio: '音声を開く',
+    back: '戻る',
+    noChannels: 'このカテゴリにはまだ番組がありません。',
+    noAudios: 'この番組にはまだ音声がありません。',
+    podcastTab: 'Podcast',
+    vocabularyTab: '単語帳',
+    myTab: 'マイ',
+    loading: '読み込み中...',
+    noVocabulary: 'まだ単語がありません。字幕の単語を長押しすると追加できます。',
+    expand: '展開',
+    collapse: '折りたたむ',
+    viewExplain: '解説を見る',
+    close: '閉じる',
+    language: 'Language',
+    closeTranslation: '翻訳オフ'
+  },
+  en: {
+    account: 'Account',
+    loginTitle: 'Log in to use vocabulary and word explanations',
+    registerTitle: 'Create a local account first',
+    loginHint: 'For now, sign in with email and password only. Vocabulary will be saved under the current account.',
+    interfaceLanguage: 'Interface language',
+    email: 'Email',
+    password: 'Password',
+    passwordPlaceholder: 'At least 6 characters',
+    submitting: 'Submitting...',
+    login: 'Log in',
+    registerAndLogin: 'Register and log in',
+    goRegister: 'Create account',
+    goLogin: 'Already have an account? Log in',
+    currentAccount: 'Current account',
+    vocabulary: 'Vocabulary',
+    vocabularySettings: 'Vocabulary Settings',
+    refreshContent: 'Refresh content',
+    refreshing: 'Refreshing...',
+    logout: 'Log out',
+    me: 'Me',
+    uploadAvatar: 'Upload avatar',
+    settings: 'Settings',
+    wantToListen: 'Preferred content',
+    currentShowPrefix: 'Currently showing',
+    currentShowSuffix: 'content.',
+    tools: 'Tools',
+    feedback: 'Feedback',
+    feedbackHint: 'If you have suggestions or bug reports, add me on WeChat:',
+    radioManagement: 'Broadcast management',
+    createCategory: 'Create category',
+    createChannel: 'Create channel',
+    categoryLanguage: 'Content language',
+    parentCategory: 'Parent category',
+    categoryPanel: 'Categories',
+    podcastList: 'Broadcasts',
+    audioList: 'Audio list',
+    enterPodcast: 'Open broadcast',
+    openAudio: 'Open audio',
+    back: 'Back',
+    noChannels: 'There are no broadcasts in this category yet.',
+    noAudios: 'There is no audio in this broadcast yet.',
+    podcastTab: 'Podcast',
+    vocabularyTab: 'Vocabulary',
+    myTab: 'Me',
+    loading: 'Loading...',
+    noVocabulary: 'No vocabulary yet. Long-press a word in subtitles to save it.',
+    expand: 'Expand',
+    collapse: 'Collapse',
+    viewExplain: 'View explanation',
+    close: 'Close',
+    language: 'Language',
+    closeTranslation: 'Hide translation'
+  }
+}
 
 const sourceLanguageOptions = [
-  { label: '中文', value: 'zh' },
-  { label: '日文', value: 'ja' },
-  { label: '英文', value: 'en' }
+  { value: 'zh' },
+  { value: 'ja' },
+  { value: 'en' }
 ]
 
-const targetLanguageOptions = [
-  { label: '中文', value: 'zh' },
-  { label: '日文', value: 'ja' },
-  { label: '英文', value: 'en' }
-]
+function normalizeLanguage(value) {
+  return languageOptions.some((language) => language.value === value) ? value : 'zh'
+}
+
+function detectSystemLanguage() {
+  if (typeof navigator === 'undefined') {
+    return 'zh'
+  }
+
+  const candidates = [
+    ...(Array.isArray(navigator.languages) ? navigator.languages : []),
+    navigator.language,
+    navigator.userLanguage,
+    navigator.browserLanguage
+  ].filter(Boolean)
+
+  for (const candidate of candidates) {
+    const normalized = String(candidate).toLowerCase()
+    if (normalized.startsWith('ja')) {
+      return 'ja'
+    }
+    if (normalized.startsWith('en')) {
+      return 'en'
+    }
+    if (normalized.startsWith('zh')) {
+      return 'zh'
+    }
+  }
+
+  return 'zh'
+}
+
+function readStoredInterfaceLanguage() {
+  if (typeof window === 'undefined') {
+    return detectSystemLanguage()
+  }
+  try {
+    const storedLanguage = localStorage.getItem(INTERFACE_LANGUAGE_KEY)
+    return storedLanguage ? normalizeLanguage(storedLanguage) : detectSystemLanguage()
+  } catch {
+    return detectSystemLanguage()
+  }
+}
 
 const form = ref({
   mediaUrl: '',
   sourceLanguage: 'en',
-  targetLanguages: 'ja',
+  targetLanguages: 'zh,ja',
   folderId: 'inbox'
 })
 const authForm = ref({
   email: '',
   password: ''
 })
+const interfaceLanguage = ref(readStoredInterfaceLanguage())
 const authMode = ref('login')
 const currentUser = ref(null)
 const authReady = ref(false)
@@ -104,11 +332,11 @@ const isMovingTask = ref(false)
 const isDeletingFolder = ref(false)
 const isRenamingFolder = ref(false)
 const isSyncingCloud = ref(false)
+const isLoggingOut = ref(false)
 const isLoadingVocabulary = ref(false)
 const vocabulary = ref([])
 const showVocabularyModal = ref(false)
-const expandedVocabularyDates = ref([])
-const selectedVocabularyItem = ref(null)
+const showVocabularySettingsModal = ref(false)
 const errorMessage = ref('')
 const successMessage = ref('')
 const authErrorMessage = ref('')
@@ -123,7 +351,9 @@ const viewportWidth = ref(typeof window === 'undefined' ? 1280 : window.innerWid
 let pollTimer = null
 
 const selectedTask = computed(() => tasks.value.find((task) => task.id === selectedTaskId.value) || null)
+const isNativeApp = computed(() => Capacitor.isNativePlatform())
 const isMobileLayout = computed(() => viewportWidth.value <= 820)
+const currentInterfaceLanguage = computed(() => normalizeLanguage(interfaceLanguage.value))
 const preferredContentLanguage = computed(() => currentUser.value?.preferredContentLanguage || 'en')
 const visibleTasks = computed(() => {
   if (!isMobileLayout.value) {
@@ -143,24 +373,41 @@ const selectedFolderTaskCount = computed(() => filteredTasks.value.length)
 const detailPlaylist = computed(() =>
   filteredTasks.value.filter((task) => task.status === 'COMPLETED' && task.audioAvailable)
 )
-const vocabularyCount = computed(() => vocabulary.value.length)
-const groupedVocabulary = computed(() => {
-  const groups = new Map()
-  for (const item of vocabulary.value) {
-    const dateKey = formatVocabularyDateKey(item.createdAt)
-    if (!groups.has(dateKey)) {
-      groups.set(dateKey, [])
-    }
-    groups.get(dateKey).push(item)
+const detailLanguageOptions = computed(() => {
+  if (!selectedTask.value) {
+    return []
   }
-  return [...groups.entries()].map(([dateKey, items]) => ({
-    dateKey,
-    label: formatVocabularyDateLabel(dateKey),
-    items: [...items].sort((left, right) => new Date(right.createdAt) - new Date(left.createdAt))
-  }))
+
+  const sourceLanguage = selectedTask.value.sourceLanguage || ''
+  const translationKeys = new Set()
+  for (const segment of selectedTask.value.segments || []) {
+    for (const key of Object.keys(segment.translations || {})) {
+      if (key && key !== sourceLanguage) {
+        translationKeys.add(key)
+      }
+    }
+  }
+
+  return [
+    {
+      value: '',
+      label: t('closeTranslation')
+    },
+    ...[...translationKeys]
+    .filter((language) => languageLabelMap[language])
+    .map((language) => ({
+      value: language,
+      label: `${languageLabelMap[sourceLanguage] || sourceLanguage}翻${languageLabelMap[language]}`
+    }))
+  ]
 })
+const vocabularyCount = computed(() => vocabulary.value.length)
 const mobilePreferredLanguageLabel = computed(() =>
-  preferredContentLanguage.value === 'ja' ? '日文听力' : '英文听力'
+  preferredContentLanguage.value === 'ja'
+    ? `${getLanguageName('ja')} ${currentInterfaceLanguage.value === 'en' ? 'Audio' : currentInterfaceLanguage.value === 'ja' ? '放送' : '听力'}`
+    : preferredContentLanguage.value === 'zh'
+      ? `${getLanguageName('zh')} ${currentInterfaceLanguage.value === 'en' ? 'Audio' : currentInterfaceLanguage.value === 'ja' ? '放送' : '广播'}`
+      : `${getLanguageName('en')} ${currentInterfaceLanguage.value === 'en' ? 'Audio' : currentInterfaceLanguage.value === 'ja' ? '放送' : '听力'}`
 )
 const canSyncToCloud = computed(() => currentUser.value?.email === 'leonlovepeace@outlook.com')
 const isAdmin = computed(() => currentUser.value?.email === 'leonlovepeace@outlook.com')
@@ -175,6 +422,9 @@ const selectedMobileChannel = computed(() =>
 )
 const categoryDirectTasks = computed(() =>
   visibleTasks.value.filter((task) => task.folderId === selectedMobileCategoryId.value)
+)
+const desktopCategoryDirectTasks = computed(() =>
+  visibleTasks.value.filter((task) => task.folderId === selectedDesktopCategoryId.value)
 )
 const categoryChannels = computed(() =>
   folders.value
@@ -223,6 +473,9 @@ const selectedDesktopCategory = computed(() =>
 const selectedDesktopChannel = computed(() =>
   folders.value.find((folder) => folder.id === selectedDesktopChannelId.value) || null
 )
+const selectedDesktopChannelCard = computed(() =>
+  desktopChannelCards.value.find((card) => card.id === selectedDesktopChannelId.value) || null
+)
 const showDesktopChannelPanel = computed(() =>
   desktopLibraryLevel.value === 'channels' && hasOpenedDesktopChannel.value && Boolean(selectedDesktopChannelId.value)
 )
@@ -250,10 +503,26 @@ const desktopCategoryChannels = computed(() =>
       }
     })
 )
-const desktopChannelCards = computed(() => desktopCategoryChannels.value)
+const desktopChannelCards = computed(() => {
+  const cards = [...desktopCategoryChannels.value]
+  if (desktopCategoryDirectTasks.value.length > 0 && selectedDesktopCategory.value) {
+    const latestTask = [...desktopCategoryDirectTasks.value].sort((left, right) => new Date(right.updatedAt) - new Date(left.updatedAt))[0] || null
+    cards.unshift({
+      id: `direct-${selectedDesktopCategory.value.id}`,
+      name: '直属内容',
+      taskCount: desktopCategoryDirectTasks.value.length,
+      latestTaskTitle: latestTask?.mediaTitle || latestTask?.mediaUrl || '',
+      latestUpdatedAt: latestTask?.updatedAt || latestTask?.createdAt || null,
+      isVirtual: true,
+      contentLanguage: selectedDesktopCategory.value.contentLanguage
+    })
+  }
+  return cards
+})
 const desktopChannelOptions = computed(() =>
   folders.value.filter((folder) => folder.kind === 'channel' && folder.parentId === desktopTaskCategoryId.value)
 )
+const desktopRealChannelCount = computed(() => desktopCategoryChannels.value.length)
 const desktopSelectedCategoryForEdit = computed(() =>
   categoryFolders.value.find((folder) => folder.id === selectedDesktopCategoryRadioId.value)
   || categoryFolders.value.find((folder) => folder.id === selectedDesktopCategoryId.value)
@@ -267,6 +536,9 @@ const desktopSelectedChannelForEdit = computed(() =>
 const desktopEpisodeTasks = computed(() => {
   if (!selectedDesktopChannelId.value) {
     return []
+  }
+  if (selectedDesktopChannelId.value.startsWith('direct-')) {
+    return [...desktopCategoryDirectTasks.value].sort((left, right) => new Date(right.createdAt) - new Date(left.createdAt))
   }
   return visibleTasks.value
     .filter((task) => task.folderId === selectedDesktopChannelId.value)
@@ -288,9 +560,41 @@ const parsedBulkLinks = computed(() =>
     })
     .filter((value, index, items) => /^https?:\/\//.test(value) && items.indexOf(value) === index)
 )
+const autoTargetLanguageOptions = computed(() =>
+  sourceLanguageOptions.filter((language) => language.value !== form.value.sourceLanguage)
+)
+const autoTargetLanguageLabel = computed(() =>
+  autoTargetLanguageOptions.value.map((language) => getLanguageName(language.value)).join(' / ')
+)
+
+function getLanguageName(languageValue, uiLanguage = currentInterfaceLanguage.value) {
+  const matchedLanguage = languageOptions.find((language) => language.value === languageValue)
+  return matchedLanguage?.labels?.[uiLanguage] || matchedLanguage?.labels?.zh || languageValue
+}
+
+function t(key) {
+  return uiMessages[currentInterfaceLanguage.value]?.[key] || uiMessages.zh[key] || key
+}
+
+function setInterfaceLanguage(nextLanguage) {
+  const normalized = normalizeLanguage(nextLanguage)
+  interfaceLanguage.value = normalized
+  try {
+    localStorage.setItem(INTERFACE_LANGUAGE_KEY, normalized)
+  } catch {
+    // Ignore local storage failures.
+  }
+}
 
 function updateViewportWidth() {
   viewportWidth.value = window.innerWidth
+}
+
+function buildAutoTargetLanguages(sourceLanguage) {
+  return sourceLanguageOptions
+    .filter((language) => language.value !== sourceLanguage)
+    .map((language) => language.value)
+    .join(',')
 }
 
 function readFileAsDataUrl(file) {
@@ -300,6 +604,67 @@ function readFileAsDataUrl(file) {
     reader.onerror = () => reject(new Error('读取图片失败'))
     reader.readAsDataURL(file)
   })
+}
+
+function loadImageFromDataUrl(dataUrl) {
+  return new Promise((resolve, reject) => {
+    const image = new Image()
+    image.onload = () => resolve(image)
+    image.onerror = () => reject(new Error('读取图片失败'))
+    image.src = dataUrl
+  })
+}
+
+async function normalizeAvatarDataUrl(dataUrl) {
+  return normalizeImageDataUrl(dataUrl, { maxSide: 512, quality: 0.82 })
+}
+
+async function normalizeCoverDataUrl(dataUrl) {
+  return normalizeImageDataUrl(dataUrl, { maxSide: 1280, quality: 0.78 })
+}
+
+async function normalizeImageDataUrl(dataUrl, { maxSide = 1024, quality = 0.8 } = {}) {
+  if (!dataUrl) {
+    return ''
+  }
+
+  try {
+    const image = await loadImageFromDataUrl(dataUrl)
+    const scale = Math.min(1, maxSide / Math.max(image.width || 1, image.height || 1))
+    const width = Math.max(1, Math.round((image.width || 1) * scale))
+    const height = Math.max(1, Math.round((image.height || 1) * scale))
+    const canvas = document.createElement('canvas')
+    canvas.width = width
+    canvas.height = height
+    const context = canvas.getContext('2d')
+    if (!context) {
+      return dataUrl
+    }
+    context.drawImage(image, 0, 0, width, height)
+    return canvas.toDataURL('image/jpeg', quality)
+  } catch {
+    return dataUrl
+  }
+}
+
+async function persistAvatarDataUrl(dataUrl) {
+  if (!currentUser.value) {
+    return
+  }
+
+  isUpdatingProfile.value = true
+  errorMessage.value = ''
+  successMessage.value = ''
+  try {
+    const normalizedAvatar = await normalizeAvatarDataUrl(String(dataUrl || ''))
+    currentUser.value = await updateProfile({ avatarDataUrl: normalizedAvatar })
+    await saveCachedProfile(currentUser.value)
+    successMessage.value = '头像已更新'
+  } catch (error) {
+    errorMessage.value = error.message
+  } finally {
+    isUpdatingProfile.value = false
+  }
 }
 
 function buildFolderCardStyle(folder) {
@@ -328,31 +693,6 @@ function buildNextDefaultFolderName(baseName, parentId = '') {
     index += 1
   }
   return `${baseName} ${index}`
-}
-
-function formatVocabularyDateKey(value) {
-  if (!value) {
-    return '未记录日期'
-  }
-  const date = new Date(value)
-  if (Number.isNaN(date.getTime())) {
-    return '未记录日期'
-  }
-  const year = date.getFullYear()
-  const month = String(date.getMonth() + 1).padStart(2, '0')
-  const day = String(date.getDate()).padStart(2, '0')
-  return `${year}-${month}-${day}`
-}
-
-function formatVocabularyDateLabel(dateKey) {
-  if (dateKey === '未记录日期') {
-    return dateKey
-  }
-  const date = new Date(`${dateKey}T00:00:00`)
-  if (Number.isNaN(date.getTime())) {
-    return dateKey
-  }
-  return `${date.getFullYear()}年${date.getMonth() + 1}月${date.getDate()}日`
 }
 
 function parseHashRoute() {
@@ -416,14 +756,29 @@ function openDesktopCategory(categoryId) {
   selectedDesktopChannelRadioId.value = ''
   hasOpenedDesktopChannel.value = false
   desktopTaskCategoryId.value = categoryId
-  const cards = folders.value
-    .filter((folder) => folder.kind === 'channel' && folder.parentId === categoryId)
-    .map((channel) => channel.id)
+  const directTaskCount = visibleTasks.value.filter((task) => task.folderId === categoryId).length
+  const cards = [
+    ...(directTaskCount > 0 ? [`direct-${categoryId}`] : []),
+    ...folders.value
+      .filter((folder) => folder.kind === 'channel' && folder.parentId === categoryId)
+      .map((channel) => channel.id)
+  ]
   selectedDesktopChannelId.value = cards[0] || ''
-  desktopTaskChannelId.value = cards[0] || ''
+  desktopTaskChannelId.value = cards[0]?.startsWith('direct-') ? '' : cards[0] || ''
 }
 
 function openDesktopChannel(channelId) {
+  if (channelId.startsWith('direct-')) {
+    const categoryId = channelId.replace(/^direct-/, '')
+    selectedDesktopCategoryId.value = categoryId
+    selectedDesktopCategoryRadioId.value = categoryId
+    hasOpenedDesktopChannel.value = true
+    selectedDesktopChannelId.value = channelId
+    selectedDesktopChannelRadioId.value = channelId
+    desktopTaskChannelId.value = ''
+    selectedFolderId.value = categoryId
+    return
+  }
   const targetChannel = folders.value.find((folder) => folder.id === channelId)
   if (targetChannel?.parentId) {
     selectedDesktopCategoryId.value = targetChannel.parentId
@@ -471,6 +826,11 @@ async function loadLibrary(options = {}) {
     const [folderData, taskData] = await Promise.all([fetchFolders(), fetchTasks()])
     folders.value = folderData
     tasks.value = taskData
+    await saveCachedLibrarySnapshot({
+      folders: folderData,
+      tasks: taskData,
+      cachedAt: Date.now()
+    })
 
     const availableFolders = isMobileLayout.value ? visibleFolders.value : folders.value
     const resolvedFolderId = availableFolders.some((folder) => folder.id === preferredFolderId)
@@ -515,7 +875,15 @@ async function loadLibrary(options = {}) {
       desktopTaskChannelId.value = preferredChannels[0]?.id || ''
     }
   } catch (error) {
-    errorMessage.value = error.message
+    const cachedSnapshot = await loadCachedLibrarySnapshot()
+    if (cachedSnapshot?.folders?.length || cachedSnapshot?.tasks?.length) {
+      folders.value = cachedSnapshot.folders || []
+      tasks.value = cachedSnapshot.tasks || []
+      errorMessage.value = '当前使用本地缓存内容，网络恢复后会自动刷新'
+      syncViewFromHash()
+    } else {
+      errorMessage.value = error.message
+    }
   } finally {
     isLoading.value = false
   }
@@ -524,30 +892,62 @@ async function loadLibrary(options = {}) {
 async function loadVocabularyList() {
   if (!currentUser.value) {
     vocabulary.value = []
-    expandedVocabularyDates.value = []
     return
   }
 
   isLoadingVocabulary.value = true
   try {
     vocabulary.value = await fetchVocabulary()
-    const firstDate = groupedVocabulary.value[0]?.dateKey
-    expandedVocabularyDates.value = firstDate ? [firstDate] : []
+    await saveCachedVocabulary(currentUser.value.id, vocabulary.value)
   } catch (error) {
-    errorMessage.value = error.message
+    const cachedVocabulary = await loadCachedVocabulary(currentUser.value.id)
+    if (cachedVocabulary.length > 0) {
+      vocabulary.value = cachedVocabulary
+      errorMessage.value = '当前使用本地缓存生词本，网络恢复后会自动刷新'
+    } else {
+      errorMessage.value = error.message
+    }
   } finally {
     isLoadingVocabulary.value = false
   }
 }
 
 async function bootstrapAuthenticatedUser() {
+  await hydrateAuthToken()
   if (!getAuthToken()) {
     authReady.value = true
     return
   }
 
   try {
-    currentUser.value = await fetchCurrentUser()
+    await cleanupExpiredAudioCache()
+    const cachedProfile = await loadCachedProfile()
+    if (cachedProfile) {
+      currentUser.value = cachedProfile
+    }
+
+    const cachedSnapshot = await loadCachedLibrarySnapshot()
+    if (cachedSnapshot?.folders?.length || cachedSnapshot?.tasks?.length) {
+      folders.value = cachedSnapshot.folders || []
+      tasks.value = cachedSnapshot.tasks || []
+      syncViewFromHash()
+    }
+
+    if (cachedProfile?.id) {
+      const cachedVocabulary = await loadCachedVocabulary(cachedProfile.id)
+      if (cachedVocabulary.length > 0) {
+        vocabulary.value = cachedVocabulary
+      }
+    }
+
+    if (currentUser.value) {
+      authReady.value = true
+    }
+
+    const me = await fetchCurrentUser()
+    currentUser.value = me
+    await saveCachedProfile(me)
+    authReady.value = true
     await Promise.all([
       loadLibrary({ preferredTaskId: parseHashRoute().taskId }),
       loadVocabularyList()
@@ -569,8 +969,10 @@ async function submitAuth() {
     const result = await request(authForm.value)
     setAuthToken(result.token)
     currentUser.value = result.user
+    await saveCachedProfile(result.user)
     authForm.value.password = ''
-    await Promise.all([
+    authReady.value = true
+    Promise.allSettled([
       loadLibrary({ preferredTaskId: parseHashRoute().taskId }),
       loadVocabularyList()
     ])
@@ -583,12 +985,18 @@ async function submitAuth() {
 }
 
 async function handleLogout() {
-  try {
-    await logout()
-  } catch {
-    // Ignore logout API failures and clear local state anyway.
+  if (isLoggingOut.value) {
+    return
   }
+
+  isLoggingOut.value = true
+  const cachedUserId = currentUser.value?.id || ''
+  const logoutToken = getAuthToken()
+
   clearAuthToken()
+  await clearCachedProfile()
+  await clearCachedLibrarySnapshot()
+  await clearCachedVocabulary(cachedUserId)
   currentUser.value = null
   vocabulary.value = []
   tasks.value = []
@@ -598,6 +1006,15 @@ async function handleLogout() {
   currentView.value = 'dashboard'
   mobileTab.value = 'podcast'
   authMode.value = 'login'
+  window.location.hash = '/'
+
+  try {
+    await logout({ token: logoutToken })
+  } catch {
+    // Ignore logout API failures and keep the local logout immediate.
+  } finally {
+    isLoggingOut.value = false
+  }
 }
 
 async function handleProfileLanguageChange(event) {
@@ -610,6 +1027,7 @@ async function handleProfileLanguageChange(event) {
   errorMessage.value = ''
   try {
     currentUser.value = await updateProfile({ preferredContentLanguage: nextLanguage })
+    await saveCachedProfile(currentUser.value)
     await loadLibrary({ preferredFolderId: selectedFolderId.value, preferredTaskId: selectedTaskId.value })
   } catch (error) {
     errorMessage.value = error.message
@@ -618,26 +1036,58 @@ async function handleProfileLanguageChange(event) {
   }
 }
 
+function handleInterfaceLanguageChange(eventOrLanguage) {
+  const nextLanguage = typeof eventOrLanguage === 'string'
+    ? eventOrLanguage
+    : eventOrLanguage?.target?.value
+  setInterfaceLanguage(nextLanguage)
+}
+
 async function handleAvatarSelected(event) {
   const [file] = event.target.files || []
   if (!file || !currentUser.value) {
     return
   }
 
-  const reader = new FileReader()
-  reader.onload = async () => {
-    isUpdatingProfile.value = true
-    errorMessage.value = ''
-    try {
-      currentUser.value = await updateProfile({ avatarDataUrl: String(reader.result || '') })
-      successMessage.value = '头像已更新'
-    } catch (error) {
-      errorMessage.value = error.message
-    } finally {
-      isUpdatingProfile.value = false
-    }
+  try {
+    const dataUrl = await readFileAsDataUrl(file)
+    await persistAvatarDataUrl(dataUrl)
+  } catch (error) {
+    errorMessage.value = error.message
+  } finally {
+    event.target.value = ''
   }
-  reader.readAsDataURL(file)
+}
+
+async function pickAvatarFromDevice() {
+  if (!currentUser.value || !Capacitor.isNativePlatform()) {
+    return
+  }
+
+  try {
+    const photo = await Camera.getPhoto({
+      source: CameraSource.Photos,
+      resultType: CameraResultType.DataUrl,
+      quality: 80,
+      width: 512,
+      height: 512,
+      promptLabelHeader: '选择头像',
+      promptLabelPhoto: '从相册选择',
+      promptLabelPicture: '拍照',
+      promptLabelCancel: '取消'
+    })
+
+    if (!photo?.dataUrl) {
+      return
+    }
+
+    await persistAvatarDataUrl(photo.dataUrl)
+  } catch (error) {
+    if (String(error?.message || '').toLowerCase().includes('cancel')) {
+      return
+    }
+    errorMessage.value = '选择头像失败'
+  }
 }
 
 async function handleAdminChannelCoverSelected(event) {
@@ -646,7 +1096,8 @@ async function handleAdminChannelCoverSelected(event) {
     return
   }
   try {
-    adminChannelForm.value.coverImageDataUrl = await readFileAsDataUrl(file)
+    const dataUrl = await readFileAsDataUrl(file)
+    adminChannelForm.value.coverImageDataUrl = await normalizeCoverDataUrl(dataUrl)
   } catch (error) {
     errorMessage.value = error.message
   }
@@ -658,7 +1109,8 @@ async function handleAdminCategoryCoverSelected(event) {
     return
   }
   try {
-    adminCategoryForm.value.coverImageDataUrl = await readFileAsDataUrl(file)
+    const dataUrl = await readFileAsDataUrl(file)
+    adminCategoryForm.value.coverImageDataUrl = await normalizeCoverDataUrl(dataUrl)
   } catch (error) {
     errorMessage.value = error.message
   }
@@ -670,7 +1122,8 @@ async function handleFolderEditorCoverSelected(event) {
     return
   }
   try {
-    folderEditorForm.value.coverImageDataUrl = await readFileAsDataUrl(file)
+    const dataUrl = await readFileAsDataUrl(file)
+    folderEditorForm.value.coverImageDataUrl = await normalizeCoverDataUrl(dataUrl)
   } catch (error) {
     errorMessage.value = error.message
   }
@@ -1047,29 +1500,21 @@ function openVocabularyModal() {
     loadVocabularyList()
     return
   }
-  selectedVocabularyItem.value = null
   showVocabularyModal.value = true
   loadVocabularyList()
 }
 
-function toggleVocabularyDate(dateKey) {
-  if (expandedVocabularyDates.value.includes(dateKey)) {
-    expandedVocabularyDates.value = expandedVocabularyDates.value.filter((value) => value !== dateKey)
-    return
-  }
-  expandedVocabularyDates.value = [...expandedVocabularyDates.value, dateKey]
-}
-
-function openVocabularyItem(item) {
-  selectedVocabularyItem.value = item
+function openVocabularySettings() {
+  showVocabularySettingsModal.value = true
+  loadVocabularyList()
 }
 
 async function handleRemoveVocabulary(itemId) {
   try {
     await removeVocabulary(itemId)
     vocabulary.value = vocabulary.value.filter((item) => item.id !== itemId)
-    if (selectedVocabularyItem.value?.id === itemId) {
-      selectedVocabularyItem.value = null
+    if (currentUser.value?.id) {
+      await saveCachedVocabulary(currentUser.value.id, vocabulary.value)
     }
   } catch (error) {
     errorMessage.value = error.message
@@ -1081,6 +1526,9 @@ async function handleWordSaved(item) {
     return
   }
   vocabulary.value = [item, ...vocabulary.value.filter((existing) => existing.id !== item.id)]
+  if (currentUser.value?.id) {
+    await saveCachedVocabulary(currentUser.value.id, vocabulary.value)
+  }
 }
 
 watch(filteredTasks, (currentTasks) => {
@@ -1128,7 +1576,30 @@ watch(preferredContentLanguage, () => {
   selectedDesktopChannelId.value = ''
   desktopTaskCategoryId.value = ''
   desktopTaskChannelId.value = ''
+  adminCategoryForm.value.contentLanguage = preferredContentLanguage.value
 })
+
+watch(
+  () => form.value.sourceLanguage,
+  (sourceLanguage) => {
+    form.value.targetLanguages = buildAutoTargetLanguages(sourceLanguage)
+  },
+  { immediate: true }
+)
+
+watch(
+  detailLanguageOptions,
+  (options) => {
+    if (!options.length) {
+      activeLanguage.value = ''
+      return
+    }
+    if (!options.some((option) => option.value === activeLanguage.value)) {
+      activeLanguage.value = options[0].value
+    }
+  },
+  { immediate: true }
+)
 
 watch(desktopChannelCards, (cards) => {
   if (!cards.some((card) => card.id === selectedDesktopChannelId.value)) {
@@ -1200,32 +1671,32 @@ onBeforeUnmount(() => {
   >
     <section v-if="!authReady || !currentUser" class="hero-card auth-shell">
       <div class="auth-card">
-        <p class="eyebrow">账号</p>
-        <h1>{{ authMode === 'login' ? '登录后使用生词本和词语解释' : '先创建一个本地账号' }}</h1>
+        <p class="eyebrow">{{ t('account') }}</p>
+        <h1>{{ authMode === 'login' ? t('loginTitle') : t('registerTitle') }}</h1>
         <p class="hero-text">
-          目前先用邮箱和密码登录，不做验证码。生词本会绑定到当前账号下面。
+          {{ t('loginHint') }}
         </p>
 
         <form class="task-form auth-form" @submit.prevent="submitAuth">
           <label>
-            <span>邮箱</span>
+            <span>{{ t('email') }}</span>
             <input v-model.trim="authForm.email" type="email" placeholder="you@example.com" required />
           </label>
           <label>
-            <span>密码</span>
-            <input v-model="authForm.password" type="password" placeholder="至少 6 位" required />
+            <span>{{ t('password') }}</span>
+            <input v-model="authForm.password" type="password" :placeholder="t('passwordPlaceholder')" required />
           </label>
           <p v-if="authErrorMessage" class="error-banner">{{ authErrorMessage }}</p>
           <div class="auth-actions">
             <button type="submit" class="primary-button" :disabled="isSubmittingAuth">
-              {{ isSubmittingAuth ? '提交中...' : authMode === 'login' ? '登录' : '注册并登录' }}
+              {{ isSubmittingAuth ? t('submitting') : authMode === 'login' ? t('login') : t('registerAndLogin') }}
             </button>
             <button
               type="button"
               class="ghost-button"
               @click="authMode = authMode === 'login' ? 'register' : 'login'"
             >
-              {{ authMode === 'login' ? '去注册' : '已有账号，去登录' }}
+              {{ authMode === 'login' ? t('goRegister') : t('goLogin') }}
             </button>
           </div>
         </form>
@@ -1235,18 +1706,30 @@ onBeforeUnmount(() => {
     <template v-else>
       <section v-if="!isMobileLayout" class="hero-card session-toolbar">
         <div>
-          <p class="eyebrow">当前账号</p>
+          <p class="eyebrow">{{ t('currentAccount') }}</p>
           <strong>{{ currentUser.email }}</strong>
         </div>
         <div v-if="!isMobileLayout" class="session-actions">
+          <div class="language-switcher interface-language-switcher">
+            <button
+              v-for="language in languageOptions"
+              :key="language.value"
+              type="button"
+              class="switch-button"
+              :class="{ active: currentInterfaceLanguage === language.value }"
+              @click="handleInterfaceLanguageChange(language.value)"
+            >
+              {{ getLanguageName(language.value) }}
+            </button>
+          </div>
           <button type="button" class="ghost-button" @click="openVocabularyModal">
-            生词本 {{ vocabularyCount ? `(${vocabularyCount})` : '' }}
+            {{ t('vocabulary') }} {{ vocabularyCount ? `(${vocabularyCount})` : '' }}
           </button>
           <button type="button" class="ghost-button" @click="loadLibrary" :disabled="isLoading">
-            {{ isLoading ? '刷新中...' : '刷新内容' }}
+            {{ isLoading ? t('refreshing') : t('refreshContent') }}
           </button>
           <button type="button" class="danger-button session-logout-button" @click="handleLogout">
-            退出登录
+            {{ t('logout') }}
           </button>
         </div>
       </section>
@@ -1254,7 +1737,7 @@ onBeforeUnmount(() => {
       <template v-if="currentView === 'dashboard'">
         <section v-if="isMobileLayout && mobileTab === 'me'" class="dashboard-grid mobile-profile-grid">
           <section class="panel-card mobile-profile-card">
-            <p class="eyebrow">我的</p>
+            <p class="eyebrow">{{ t('me') }}</p>
             <div class="profile-avatar-row">
               <div class="profile-avatar">
                 <img v-if="currentUser.avatarDataUrl" :src="currentUser.avatarDataUrl" alt="avatar" />
@@ -1262,80 +1745,102 @@ onBeforeUnmount(() => {
               </div>
               <div class="profile-avatar-copy">
                 <strong>{{ currentUser.email }}</strong>
-                <label class="ghost-button avatar-upload-button">
-                  上传头像
+                <button
+                  v-if="isNativeApp"
+                  type="button"
+                  class="ghost-button avatar-upload-button"
+                  :disabled="isUpdatingProfile"
+                  @click="pickAvatarFromDevice"
+                >
+                  {{ isUpdatingProfile ? t('submitting') : t('uploadAvatar') }}
+                </button>
+                <label v-else class="ghost-button avatar-upload-button">
+                  {{ t('uploadAvatar') }}
                   <input type="file" accept="image/*" class="hidden-file-input" @change="handleAvatarSelected" />
                 </label>
               </div>
             </div>
 
             <div class="mobile-setting-card">
-              <p class="eyebrow">设置</p>
+              <p class="eyebrow">{{ t('settings') }}</p>
               <label>
-                <span>想要听广播</span>
+                <span>{{ t('interfaceLanguage') }}</span>
+                <select :value="currentInterfaceLanguage" @change="handleInterfaceLanguageChange">
+                  <option v-for="language in languageOptions" :key="language.value" :value="language.value">
+                    {{ getLanguageName(language.value) }}
+                  </option>
+                </select>
+              </label>
+              <label>
+                <span>{{ t('wantToListen') }}</span>
                 <select :value="preferredContentLanguage" @change="handleProfileLanguageChange" :disabled="isUpdatingProfile">
-                  <option value="en">英文</option>
-                  <option value="ja">日文</option>
+                  <option v-for="language in languageOptions" :key="language.value" :value="language.value">
+                    {{ getLanguageName(language.value) }}
+                  </option>
                 </select>
               </label>
               <p class="hero-text">
-                当前会显示{{ mobilePreferredLanguageLabel }}内容。
+                {{ t('currentShowPrefix') }}{{ mobilePreferredLanguageLabel }}{{ t('currentShowSuffix') }}
               </p>
             </div>
 
             <div class="mobile-setting-card">
-              <p class="eyebrow">工具</p>
+              <p class="eyebrow">{{ t('tools') }}</p>
               <div class="auth-actions">
+                <button type="button" class="ghost-button" @click="openVocabularySettings">
+                  {{ t('vocabularySettings') }}
+                </button>
                 <button type="button" class="ghost-button" @click="loadLibrary" :disabled="isLoading">
-                  {{ isLoading ? '刷新中...' : '刷新内容' }}
+                  {{ isLoading ? t('refreshing') : t('refreshContent') }}
                 </button>
               </div>
             </div>
 
             <div class="mobile-setting-card">
-              <p class="eyebrow">反馈</p>
-              <p class="hero-text">如果你想提建议或者反馈问题，可以直接加我微信：</p>
+              <p class="eyebrow">{{ t('feedback') }}</p>
+              <p class="hero-text">{{ t('feedbackHint') }}</p>
               <strong class="feedback-wechat">-Leonfc-</strong>
             </div>
 
             <div v-if="isAdmin" class="mobile-setting-card">
-              <p class="eyebrow">广播管理</p>
+              <p class="eyebrow">{{ t('radioManagement') }}</p>
               <form class="task-form" @submit.prevent="submitAdminCategory">
                 <label>
-                  <span>新建大类</span>
+                  <span>{{ t('createCategory') }}</span>
                   <input v-model.trim="adminCategoryForm.name" type="text" placeholder="比如：日语听力 / 英文新闻" />
                 </label>
                 <label>
-                  <span>内容语言</span>
+                  <span>{{ t('categoryLanguage') }}</span>
                   <select v-model="adminCategoryForm.contentLanguage">
-                    <option value="ja">日文</option>
-                    <option value="en">英文</option>
+                    <option v-for="language in languageOptions" :key="language.value" :value="language.value">
+                      {{ getLanguageName(language.value) }}
+                    </option>
                   </select>
                 </label>
                 <button type="submit" class="ghost-button" :disabled="isCreatingCategory">
-                  {{ isCreatingCategory ? '创建中...' : '创建大类' }}
+                  {{ isCreatingCategory ? t('submitting') : t('createCategory') }}
                 </button>
               </form>
 
               <form class="task-form" @submit.prevent="submitAdminChannel">
                 <label>
-                  <span>新建广播</span>
+                  <span>{{ t('createChannel') }}</span>
                   <input v-model.trim="adminChannelForm.name" type="text" placeholder="比如：NHK World / BBC Learning English" />
                 </label>
                 <label>
-                  <span>归属大类</span>
+                  <span>{{ t('parentCategory') }}</span>
                   <select v-model="adminChannelForm.parentId">
                     <option v-for="folder in categoryFolders" :key="folder.id" :value="folder.id">{{ folder.name }}</option>
                   </select>
                 </label>
                 <button type="submit" class="ghost-button" :disabled="isCreatingChannel || !categoryFolders.length">
-                  {{ isCreatingChannel ? '创建中...' : '创建广播' }}
+                  {{ isCreatingChannel ? t('submitting') : t('createChannel') }}
                 </button>
               </form>
             </div>
 
             <button type="button" class="danger-button session-logout-button" @click="handleLogout">
-              退出登录
+              {{ t('logout') }}
             </button>
           </section>
         </section>
@@ -1348,38 +1853,14 @@ onBeforeUnmount(() => {
                 <h2>{{ vocabularyCount ? `${vocabularyCount} 个生词` : '还没有生词' }}</h2>
               </div>
             </div>
-
-            <p v-if="isLoadingVocabulary" class="empty-state">加载中...</p>
-            <p v-else-if="vocabulary.length === 0" class="empty-state">你还没有加入任何生词，长按字幕里的词就可以加入。</p>
-
-            <div v-else class="vocabulary-date-list">
-              <article v-for="group in groupedVocabulary" :key="group.dateKey" class="vocabulary-date-group">
-                <button type="button" class="vocabulary-date-toggle" @click="toggleVocabularyDate(group.dateKey)">
-                  <span>
-                    <strong>{{ group.label }}</strong>
-                    <small>{{ group.items.length }} 个生词</small>
-                  </span>
-                  <span class="task-open-hint">{{ expandedVocabularyDates.includes(group.dateKey) ? '收起' : '展开' }}</span>
-                </button>
-
-                <div v-if="expandedVocabularyDates.includes(group.dateKey)" class="vocabulary-list">
-                  <button
-                    v-for="item in group.items"
-                    :key="item.id"
-                    type="button"
-                    class="vocabulary-item vocabulary-item-button"
-                    @click="openVocabularyItem(item)"
-                  >
-                    <div class="vocabulary-item-top">
-                      <strong>{{ item.word }}</strong>
-                      <span class="task-open-hint">查看解释</span>
-                    </div>
-                    <p v-if="item.reading" class="vocabulary-reading">{{ item.reading }}</p>
-                    <p class="vocabulary-meta">{{ item.sentence || '点击后查看完整解释' }}</p>
-                  </button>
-                </div>
-              </article>
-            </div>
+            <VocabularyStudyPanel
+              :vocabulary="vocabulary"
+              :is-loading="isLoadingVocabulary"
+              :interface-language="currentInterfaceLanguage"
+              :user-id="currentUser?.id || ''"
+              mode="study"
+              @remove-item="handleRemoveVocabulary"
+            />
           </section>
         </section>
 
@@ -1388,7 +1869,7 @@ onBeforeUnmount(() => {
           <template v-if="mobilePodcastLevel === 'categories'">
             <div class="panel-header">
               <div>
-                <p class="eyebrow">广播大类</p>
+                <p class="eyebrow">{{ t('categoryPanel') }}</p>
                 <h2>{{ mobilePreferredLanguageLabel }}</h2>
               </div>
             </div>
@@ -1413,13 +1894,13 @@ onBeforeUnmount(() => {
           <template v-else-if="mobilePodcastLevel === 'channels'">
             <div class="panel-header">
               <div>
-                <p class="eyebrow">广播列表</p>
+                <p class="eyebrow">{{ t('podcastList') }}</p>
                 <h2>{{ selectedMobileCategory?.name || mobilePreferredLanguageLabel }}</h2>
               </div>
-              <button type="button" class="ghost-button" @click="backMobilePodcastLevel">返回</button>
+              <button type="button" class="ghost-button" @click="backMobilePodcastLevel">{{ t('back') }}</button>
             </div>
 
-            <div v-if="mobileChannelCards.length === 0" class="empty-state">这个大类下面还没有广播。</div>
+            <div v-if="mobileChannelCards.length === 0" class="empty-state">{{ t('noChannels') }}</div>
             <div v-else class="task-list">
               <button
                 v-for="channel in mobileChannelCards"
@@ -1431,7 +1912,7 @@ onBeforeUnmount(() => {
               >
                 <div class="task-item-topline">
                   <span class="task-status">{{ channel.taskCount }} 条更新</span>
-                  <span class="task-open-hint">进入广播</span>
+                  <span class="task-open-hint">{{ t('enterPodcast') }}</span>
                 </div>
                 <strong>{{ channel.name }}</strong>
                 <small>{{ channel.latestTaskTitle || '还没有最近更新' }}</small>
@@ -1442,15 +1923,15 @@ onBeforeUnmount(() => {
           <template v-else>
             <div class="panel-header">
               <div>
-                <p class="eyebrow">音频列表</p>
+                <p class="eyebrow">{{ t('audioList') }}</p>
                 <h2>{{ selectedMobileChannel?.name || selectedMobileCategory?.name || mobilePreferredLanguageLabel }}</h2>
               </div>
-              <button type="button" class="ghost-button" @click="backMobilePodcastLevel">返回</button>
+              <button type="button" class="ghost-button" @click="backMobilePodcastLevel">{{ t('back') }}</button>
             </div>
 
             <p v-if="errorMessage" class="error-banner">{{ errorMessage }}</p>
             <p v-if="successMessage" class="success-banner">{{ successMessage }}</p>
-            <p v-else-if="mobileEpisodeTasks.length === 0" class="empty-state">这个广播下面还没有音频。</p>
+            <p v-else-if="mobileEpisodeTasks.length === 0" class="empty-state">{{ t('noAudios') }}</p>
 
             <div v-else class="task-list">
               <button
@@ -1462,7 +1943,7 @@ onBeforeUnmount(() => {
               >
                 <div class="task-item-topline">
                   <span class="task-status">{{ task.status }} · {{ task.progress }}%</span>
-                  <span class="task-open-hint">打开音频</span>
+                  <span class="task-open-hint">{{ t('openAudio') }}</span>
                 </div>
                 <strong>{{ task.mediaTitle || task.mediaUrl }}</strong>
                 <small>{{ new Date(task.createdAt).toLocaleString() }}</small>
@@ -1482,6 +1963,15 @@ onBeforeUnmount(() => {
           </div>
           <div class="session-actions">
             <div class="language-switcher desktop-language-switcher">
+              <button
+                type="button"
+                class="switch-button"
+                :class="{ active: preferredContentLanguage === 'zh' }"
+                :disabled="isUpdatingProfile"
+                @click="handleProfileLanguageChange({ target: { value: 'zh' } })"
+              >
+                编辑中文
+              </button>
               <button
                 type="button"
                 class="switch-button"
@@ -1524,6 +2014,9 @@ onBeforeUnmount(() => {
             <button type="button" class="ghost-button" @click="openVocabularyModal">
               生词本 {{ vocabularyCount ? `(${vocabularyCount})` : '' }}
             </button>
+            <button type="button" class="ghost-button" @click="openVocabularySettings">
+              {{ t('vocabularySettings') }}
+            </button>
             <button v-if="canSyncToCloud" type="button" class="ghost-button" @click="pushRuntimeToCloud" :disabled="isSyncingCloud">
               {{ isSyncingCloud ? '同步中...' : '同步到云端' }}
             </button>
@@ -1542,7 +2035,7 @@ onBeforeUnmount(() => {
               </div>
               <div class="panel-header-actions">
                 <div class="summary-pill">
-                  <strong>{{ desktopLibraryLevel === 'channels' ? desktopChannelCards.length : categoryFolders.length }}</strong>
+                  <strong>{{ desktopLibraryLevel === 'channels' ? desktopRealChannelCount : categoryFolders.length }}</strong>
                   <span>{{ desktopLibraryLevel === 'channels' ? '个二类' : '个目录' }}</span>
                 </div>
                 <button v-if="desktopLibraryLevel === 'channels'" type="button" class="ghost-button" @click="backDesktopFolderLevel">
@@ -1558,7 +2051,7 @@ onBeforeUnmount(() => {
               <section class="desktop-folder-group">
                 <div class="desktop-group-head">
                   <span>{{ desktopLibraryLevel === 'channels' ? '当前一类里的二类广播' : '一类大类' }}</span>
-                  <strong>{{ desktopLibraryLevel === 'channels' ? desktopChannelCards.length : categoryFolders.length }}</strong>
+                  <strong>{{ desktopLibraryLevel === 'channels' ? desktopRealChannelCount : categoryFolders.length }}</strong>
                 </div>
                 <div class="folder-list desktop-compact-list">
                   <template v-if="desktopLibraryLevel === 'categories'">
@@ -1614,7 +2107,9 @@ onBeforeUnmount(() => {
                         </span>
                         <div class="desktop-channel-copy">
                           <div class="task-item-topline">
-                            <span class="task-status">{{ channel.taskCount }} 条内容</span>
+                            <span class="task-status">
+                              {{ channel.isVirtual ? '未归类内容' : `${channel.taskCount} 条内容` }}
+                            </span>
                           </div>
                           <strong>{{ channel.name }}</strong>
                           <small>{{ channel.latestTaskTitle || '还没有广播内容' }}</small>
@@ -1631,7 +2126,7 @@ onBeforeUnmount(() => {
             <div class="panel-header">
               <div>
                 <p class="eyebrow">{{ showDesktopChannelPanel ? '广播内容' : '添加广播内容' }}</p>
-                <h2>{{ selectedDesktopChannel?.name || '先选二类，再在这里添加录音' }}</h2>
+                <h2>{{ selectedDesktopChannelCard?.name || '先选二类，再在这里添加录音' }}</h2>
               </div>
               <div class="summary-pill">
                 <strong>{{ showDesktopChannelPanel ? desktopEpisodeTasks.length : desktopChannelOptions.length }}</strong>
@@ -1657,17 +2152,14 @@ onBeforeUnmount(() => {
                 <span>源语言</span>
                 <select v-model="form.sourceLanguage" required>
                   <option v-for="language in sourceLanguageOptions" :key="language.value" :value="language.value">
-                    {{ language.label }}
+                    {{ getLanguageName(language.value) }}
                   </option>
                 </select>
               </label>
-              <label>
-                <span>翻译语言</span>
-                <select v-model="form.targetLanguages" required>
-                  <option v-for="language in targetLanguageOptions" :key="language.value" :value="language.value">
-                    {{ language.label }}
-                  </option>
-                </select>
+              <label class="auto-translation-field">
+                <span>自动翻译</span>
+                <div class="auto-translation-value">{{ autoTargetLanguageLabel || '处理中会自动翻译成另外两种语言' }}</div>
+                <small>处理时会自动生成另外两种语言，播放器里可以直接切换。</small>
               </label>
               <label>
                 <span>放到哪个大类</span>
@@ -1691,7 +2183,7 @@ onBeforeUnmount(() => {
               </div>
             </form>
 
-            <p v-if="!showDesktopChannelPanel" class="empty-state">右边保留添加入口。只有打开某个二类后，下面才会显示这个二类里的音频内容。</p>
+            <p v-if="!showDesktopChannelPanel" class="empty-state">右边保留添加入口。只有打开某个广播后，下面才会显示这个广播里的音频内容。</p>
             <p v-else-if="desktopEpisodeTasks.length === 0" class="empty-state">这个广播下面还没有内容，直接在上面添加就行。</p>
 
             <div v-else class="task-list">
@@ -1720,10 +2212,10 @@ onBeforeUnmount(() => {
         <section class="detail-page">
           <section class="hero-card detail-header-card">
             <div v-if="!isMobileLayout" class="detail-topbar">
-              <button type="button" class="ghost-button" @click="backToDashboard">返回目录</button>
+              <button type="button" class="ghost-button" @click="backToDashboard">{{ t('back') }}</button>
               <div class="language-switcher">
                 <button
-                  v-for="language in languageOptions"
+                  v-for="language in detailLanguageOptions"
                   :key="language.value"
                   type="button"
                   class="switch-button"
@@ -1736,7 +2228,19 @@ onBeforeUnmount(() => {
             </div>
 
             <div v-else class="mobile-detail-topbar">
-              <button type="button" class="mobile-back-button" @click="backToDashboard">返回列表</button>
+              <button type="button" class="mobile-back-button" @click="backToDashboard">{{ t('back') }}</button>
+              <div v-if="detailLanguageOptions.length" class="language-switcher mobile-detail-language-switcher">
+                <button
+                  v-for="language in detailLanguageOptions"
+                  :key="language.value"
+                  type="button"
+                  class="switch-button"
+                  :class="{ active: language.value === activeLanguage }"
+                  @click="activeLanguage = language.value"
+                >
+                  {{ language.label }}
+                </button>
+              </div>
             </div>
 
             <div class="detail-header-content">
@@ -1770,6 +2274,7 @@ onBeforeUnmount(() => {
             :playlist="detailPlaylist"
             :on-select-task="openTaskDetail"
             :user="currentUser"
+            :interface-language="currentInterfaceLanguage"
             @word-saved="handleWordSaved"
           />
         </section>
@@ -1820,77 +2325,39 @@ onBeforeUnmount(() => {
       <section class="overlay-card vocabulary-modal">
         <div class="panel-header">
           <div>
-            <p class="eyebrow">生词本</p>
+            <p class="eyebrow">{{ t('vocabulary') }}</p>
             <h2>{{ currentUser?.email }}</h2>
           </div>
-          <button type="button" class="ghost-button" @click="showVocabularyModal = false">关闭</button>
+          <button type="button" class="ghost-button" @click="showVocabularyModal = false">{{ t('close') }}</button>
         </div>
-
-        <p v-if="isLoadingVocabulary" class="empty-state">加载中...</p>
-        <p v-else-if="vocabulary.length === 0" class="empty-state">你还没有加入任何生词，长按字幕里的词就可以加入。</p>
-
-        <div v-else class="vocabulary-date-list">
-          <article v-for="group in groupedVocabulary" :key="group.dateKey" class="vocabulary-date-group">
-            <button type="button" class="vocabulary-date-toggle" @click="toggleVocabularyDate(group.dateKey)">
-              <span>
-                <strong>{{ group.label }}</strong>
-                <small>{{ group.items.length }} 个生词</small>
-              </span>
-              <span class="task-open-hint">{{ expandedVocabularyDates.includes(group.dateKey) ? '收起' : '展开' }}</span>
-            </button>
-
-            <div v-if="expandedVocabularyDates.includes(group.dateKey)" class="vocabulary-list">
-              <button
-                v-for="item in group.items"
-                :key="item.id"
-                type="button"
-                class="vocabulary-item vocabulary-item-button"
-                @click="openVocabularyItem(item)"
-              >
-                <div class="vocabulary-item-top">
-                  <strong>{{ item.word }}</strong>
-                  <span class="task-open-hint">查看解释</span>
-                </div>
-                <p v-if="item.reading" class="vocabulary-reading">{{ item.reading }}</p>
-                <p class="vocabulary-meta">{{ item.sentence || '点击后查看完整解释' }}</p>
-              </button>
-            </div>
-          </article>
-        </div>
+        <VocabularyStudyPanel
+          :vocabulary="vocabulary"
+          :is-loading="isLoadingVocabulary"
+          :interface-language="currentInterfaceLanguage"
+          :user-id="currentUser?.id || ''"
+          mode="study"
+          @remove-item="handleRemoveVocabulary"
+        />
       </section>
     </div>
 
-    <div v-if="selectedVocabularyItem" class="overlay-shell" @click.self="selectedVocabularyItem = null">
-      <section class="overlay-card word-dialog">
+    <div v-if="showVocabularySettingsModal" class="overlay-shell" @click.self="showVocabularySettingsModal = false">
+      <section class="overlay-card vocabulary-modal">
         <div class="panel-header">
           <div>
-            <p class="eyebrow">生词解释</p>
-            <h2>{{ selectedVocabularyItem.word }}</h2>
+            <p class="eyebrow">{{ t('settings') }}</p>
+            <h2>{{ t('vocabularySettings') }}</h2>
           </div>
-          <button type="button" class="ghost-button" @click="selectedVocabularyItem = null">关闭</button>
+          <button type="button" class="ghost-button" @click="showVocabularySettingsModal = false">{{ t('close') }}</button>
         </div>
-
-        <div class="word-dialog-body">
-          <p v-if="selectedVocabularyItem.reading" class="word-dialog-reading">{{ selectedVocabularyItem.reading }}</p>
-          <div class="word-dialog-block">
-            <span>意思</span>
-            <p>{{ selectedVocabularyItem.meaning || '暂无释义' }}</p>
-          </div>
-          <div class="word-dialog-block">
-            <span>用法</span>
-            <p>{{ selectedVocabularyItem.usage || '建议结合上下文一起记忆。' }}</p>
-          </div>
-          <div class="word-dialog-block">
-            <span>例句</span>
-            <p>{{ selectedVocabularyItem.example || selectedVocabularyItem.sentence || '暂无例句' }}</p>
-          </div>
-        </div>
-
-        <div class="word-dialog-actions">
-          <button type="button" class="danger-button inline-danger-button" @click="handleRemoveVocabulary(selectedVocabularyItem.id)">
-            删除这个生词
-          </button>
-        </div>
+        <VocabularyStudyPanel
+          :vocabulary="vocabulary"
+          :is-loading="isLoadingVocabulary"
+          :interface-language="currentInterfaceLanguage"
+          :user-id="currentUser?.id || ''"
+          mode="settings"
+          @remove-item="handleRemoveVocabulary"
+        />
       </section>
     </div>
 
@@ -1901,7 +2368,7 @@ onBeforeUnmount(() => {
         :class="{ active: mobileTab === 'podcast' }"
         @click="mobileTab = 'podcast'"
       >
-        Podcast
+        {{ t('podcastTab') }}
       </button>
       <button
         type="button"
@@ -1909,7 +2376,7 @@ onBeforeUnmount(() => {
         :class="{ active: mobileTab === 'vocabulary' }"
         @click="mobileTab = 'vocabulary'"
       >
-        生词本
+        {{ t('vocabularyTab') }}
       </button>
       <button
         type="button"
@@ -1917,7 +2384,7 @@ onBeforeUnmount(() => {
         :class="{ active: mobileTab === 'me' }"
         @click="mobileTab = 'me'"
       >
-        我的
+        {{ t('myTab') }}
       </button>
     </nav>
   </main>

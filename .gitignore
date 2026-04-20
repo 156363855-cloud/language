@@ -6,7 +6,10 @@ backend/target/
 backend/.m2/
 backend/.idea/
 backend/scripts/__pycache__/
+**/__pycache__/
 backend/runtime/
+backend/runtime-api/
+backend/runtime-worker/
 deploy/backend/app.jar
 deploy/backend/runtime/
 deploy/frontend/dist/
@@ -14,3 +17,6 @@ deploy/backend/scripts/__pycache__/
 .m2-local/
 lingualink-deploy.tar.gz
 .DS_Store
+.env
+secrets/
+storage/

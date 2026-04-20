@@ -3,10 +3,10 @@
 set -euo pipefail
 
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-LOCAL_RUNTIME_DIR="${LOCAL_RUNTIME_DIR:-$PROJECT_ROOT/backend/runtime/}"
-REMOTE_HOST="${REMOTE_HOST:-root@150.230.214.236}"
-REMOTE_DEPLOY_DIR="${REMOTE_DEPLOY_DIR:-/root/lingualink-deploy}"
-REMOTE_RUNTIME_DIR="${REMOTE_RUNTIME_DIR:-$REMOTE_DEPLOY_DIR/backend/runtime/}"
+LOCAL_RUNTIME_DIR="${LOCAL_RUNTIME_DIR:-$PROJECT_ROOT/backend/runtime-worker/}"
+REMOTE_HOST="${REMOTE_HOST:-ubuntu@43.155.234.124}"
+REMOTE_DEPLOY_DIR="${REMOTE_DEPLOY_DIR:-/home/ubuntu/lingualink}"
+REMOTE_RUNTIME_DIR="${REMOTE_RUNTIME_DIR:-$REMOTE_DEPLOY_DIR/backend/runtime-api/}"
 SSH_PASSWORD="${SSH_PASSWORD:-}"
 
 if ! command -v rsync >/dev/null 2>&1; then
@@ -101,7 +101,7 @@ run_rsync_sync
 echo
 echo "同步完成，开始重启云端后端容器..."
 
-run_remote_command "cd \"$REMOTE_DEPLOY_DIR\" && docker compose restart backend >/dev/null && for i in \$(seq 1 24); do status=\$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}unknown{{end}}' lingualink-backend 2>/dev/null || echo missing); if [ \"\$status\" = healthy ]; then echo '云端后端健康检查已恢复'; exit 0; fi; echo \"等待后端恢复中... 当前状态: \$status\"; sleep 5; done; echo '后端重启后仍未恢复健康'; docker compose ps backend; exit 1"
+run_remote_command "sudo docker restart lingualink-backend >/dev/null && for i in \$(seq 1 24); do status=\$(sudo docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}unknown{{end}}' lingualink-backend 2>/dev/null || echo missing); if [ \"\$status\" = healthy ]; then echo '云端后端健康检查已恢复'; exit 0; fi; echo \"等待后端恢复中... 当前状态: \$status\"; sleep 5; done; echo '后端重启后仍未恢复健康'; sudo docker ps --filter name=lingualink-backend; exit 1"
 
 echo
 echo "一键同步完成。"

@@ -1,16 +1,41 @@
 package com.example.lingualink.model;
 
+import jakarta.persistence.Column;
+import jakarta.persistence.Entity;
+import jakarta.persistence.Id;
+import jakarta.persistence.Lob;
+import jakarta.persistence.Table;
+
 import java.time.Instant;
 
+@Entity
+@Table(name = "vocabulary_items")
 public class VocabularyItem {
+    @Id
     private String id;
+
+    @Column(nullable = false)
+    private String userId;
+
+    @Column(nullable = false)
     private String word;
     private String reading;
+
+    @Lob
     private String meaning;
+
+    @Lob
+    @Column(name = "usage_text")
     private String usage;
+
+    @Lob
     private String example;
+
+    @Lob
     private String sentence;
     private String language;
+
+    @Column(nullable = false)
     private Instant createdAt;
 
     public String getId() {
@@ -27,6 +52,14 @@ public class VocabularyItem {
 
     public void setWord(String word) {
         this.word = word;
+    }
+
+    public String getUserId() {
+        return userId;
+    }
+
+    public void setUserId(String userId) {
+        this.userId = userId;
     }
 
     public String getReading() {

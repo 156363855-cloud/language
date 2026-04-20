@@ -1,16 +1,46 @@
 services:
+  mysql:
+    image: mysql:8.4
+    container_name: lingualink-mysql
+    network_mode: host
+    environment:
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-lingualink}
+      MYSQL_USER: ${MYSQL_USER:-lingualink}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-lingualink}
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-root}
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
+    volumes:
+      - ./storage/mysql:/var/lib/mysql
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-uroot", "-p${MYSQL_ROOT_PASSWORD:-root}"]
+      interval: 20s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
   backend:
     build:
       context: ./backend
       network: host
+      dockerfile: Dockerfile.api
     container_name: lingualink-backend
     network_mode: host
     environment:
       JAVA_TOOL_OPTIONS: "-Xms128m -Xmx256m -XX:+UseSerialGC"
-      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
+      APP_PROCESSING_ENABLED: "false"
+      SPRING_DATASOURCE_URL: ${SPRING_DATASOURCE_URL:-jdbc:mysql://127.0.0.1:3306/${MYSQL_DATABASE:-lingualink}?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Tokyo&allowPublicKeyRetrieval=true&useSSL=false}
+      SPRING_DATASOURCE_USERNAME: ${SPRING_DATASOURCE_USERNAME:-lingualink}
+      SPRING_DATASOURCE_PASSWORD: ${SPRING_DATASOURCE_PASSWORD:-lingualink}
+      SPRING_JPA_HIBERNATE_DDL_AUTO: ${SPRING_JPA_HIBERNATE_DDL_AUTO:-update}
     volumes:
-      - ./backend/runtime:/app/backend/runtime
+      - ./backend/runtime-api:/app/backend/runtime
     restart: unless-stopped
+    depends_on:
+      mysql:
+        condition: service_healthy
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8080/actuator/health"]
       interval: 30s
@@ -25,6 +55,8 @@ services:
     container_name: lingualink-frontend
     network_mode: host
     depends_on:
+      mysql:
+        condition: service_healthy
       backend:
         condition: service_healthy
     restart: unless-stopped

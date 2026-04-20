@@ -1,6 +1,14 @@
 <script setup>
 import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
-import { addVocabulary, buildApiUrl, explainWord } from '../api/tasks'
+import { addVocabulary, buildApiUrl, explainWord, getAuthToken } from '../api/tasks'
+import {
+  cacheRecentlyPlayedAudio,
+  cleanupExpiredAudioCache,
+  clearPlaybackProgress,
+  getCachedAudioUrl,
+  loadPlaybackProgress,
+  savePlaybackProgress
+} from '../services/mobileCache'
 
 const props = defineProps({
   task: {
@@ -26,6 +34,10 @@ const props = defineProps({
   user: {
     type: Object,
     default: null
+  },
+  interfaceLanguage: {
+    type: String,
+    default: 'zh'
   }
 })
 
@@ -46,10 +58,17 @@ const isSavingWord = ref(false)
 const wordDialogError = ref('')
 const longPressTimer = ref(null)
 const suppressNextTokenClick = ref(false)
+const pendingResumeSeconds = ref(null)
+const pendingResumeDuration = ref(null)
+const appliedResumeTaskId = ref('')
+const lastPersistedTaskId = ref('')
+const lastPersistedSeconds = ref(-1)
+const lastPersistedAt = ref(0)
 
 const tokenPalette = ['token-amber', 'token-teal', 'token-blue', 'token-sand', 'token-ink']
 
-const audioUrl = computed(() => buildApiUrl(`/tasks/${props.task.id}/audio`))
+const remoteAudioUrl = computed(() => buildApiUrl(`/tasks/${props.task.id}/audio`))
+const resolvedAudioUrl = ref('')
 const canPlayAudio = computed(() => Boolean(props.task.audioAvailable))
 
 const activeSegmentIndex = computed(() =>
@@ -61,6 +80,7 @@ const activeSegmentIndex = computed(() =>
 const activeSegment = computed(() =>
   activeSegmentIndex.value >= 0 ? props.task.segments[activeSegmentIndex.value] : null
 )
+const showTranslation = computed(() => Boolean(props.activeLanguage))
 
 const playbackModeLabel = computed(() => {
   if (playbackMode.value === 'segment') {
@@ -91,6 +111,9 @@ function looksLikeTranslationError(text) {
 }
 
 function displayTranslation(segment) {
+  if (!props.activeLanguage) {
+    return ''
+  }
   const translated = segment?.translations?.[props.activeLanguage] || ''
   if (looksLikeTranslationError(translated)) {
     return props.activeLanguage === 'en' ? segment?.originalText || '' : '当前语言暂无可用翻译'
@@ -127,6 +150,117 @@ function syncAudioState() {
       }
     }
   }
+
+  void persistPlaybackProgress()
+}
+
+async function hydrateAudioSource() {
+  if (!canPlayAudio.value || !props.task?.id) {
+    resolvedAudioUrl.value = ''
+    return
+  }
+
+  resolvedAudioUrl.value = remoteAudioUrl.value
+
+  try {
+    await cleanupExpiredAudioCache()
+    const cachedUrl = await getCachedAudioUrl(props.task.id)
+    if (cachedUrl) {
+      resolvedAudioUrl.value = cachedUrl
+    }
+  } catch {
+    resolvedAudioUrl.value = remoteAudioUrl.value
+  }
+}
+
+async function warmAudioCache() {
+  if (!canPlayAudio.value || !props.task?.id) {
+    return
+  }
+
+  try {
+    const cachedUrl = await cacheRecentlyPlayedAudio({
+      taskId: props.task.id,
+      remoteUrl: remoteAudioUrl.value,
+      token: getAuthToken()
+    })
+
+    if (cachedUrl && resolvedAudioUrl.value !== cachedUrl) {
+      resolvedAudioUrl.value = cachedUrl
+    }
+  } catch {
+    // Keep remote playback when cache warmup fails.
+  }
+}
+
+function shouldRestorePlaybackPosition(seconds, totalDuration) {
+  if (!Number.isFinite(seconds) || seconds < 3) {
+    return false
+  }
+  if (Number.isFinite(totalDuration) && totalDuration > 0 && totalDuration - seconds <= 5) {
+    return false
+  }
+  return true
+}
+
+async function persistPlaybackProgress(options = {}) {
+  const {
+    force = false,
+    taskId = props.task?.id,
+    seconds = audioRef.value?.currentTime ?? currentTime.value,
+    totalDuration = audioRef.value?.duration ?? duration.value
+  } = options
+
+  if (!taskId || !Number.isFinite(seconds) || seconds < 0) {
+    return
+  }
+
+  if (Number.isFinite(totalDuration) && totalDuration > 0 && totalDuration - seconds <= 3) {
+    await clearPlaybackProgress(taskId)
+    return
+  }
+
+  const now = Date.now()
+  if (
+    !force
+    && lastPersistedTaskId.value === taskId
+    && Math.abs(lastPersistedSeconds.value - seconds) < 3
+    && now - lastPersistedAt.value < 5000
+  ) {
+    return
+  }
+
+  await savePlaybackProgress({
+    taskId,
+    currentSeconds: seconds,
+    duration: totalDuration
+  })
+  lastPersistedTaskId.value = taskId
+  lastPersistedSeconds.value = seconds
+  lastPersistedAt.value = now
+}
+
+function maybeRestorePlaybackProgress() {
+  if (!audioRef.value || appliedResumeTaskId.value === props.task.id || pendingResumeSeconds.value === null) {
+    return
+  }
+
+  const totalDuration = audioRef.value.duration || duration.value || pendingResumeDuration.value
+  if (!shouldRestorePlaybackPosition(pendingResumeSeconds.value, totalDuration)) {
+    pendingResumeSeconds.value = null
+    pendingResumeDuration.value = null
+    return
+  }
+
+  const maxResumeTime = Number.isFinite(totalDuration) && totalDuration > 1
+    ? Math.max(0, totalDuration - 1)
+    : pendingResumeSeconds.value
+  const nextTime = Math.min(pendingResumeSeconds.value, maxResumeTime)
+  audioRef.value.currentTime = nextTime
+  currentTime.value = nextTime
+  appliedResumeTaskId.value = props.task.id
+  pendingResumeSeconds.value = null
+  pendingResumeDuration.value = null
 }
 
 function togglePlayback() {
@@ -136,6 +270,7 @@ function togglePlayback() {
 
   if (audioRef.value.paused) {
     audioRef.value.play().catch(() => {})
+    void warmAudioCache()
     return
   }
 
@@ -178,6 +313,10 @@ function togglePlaybackMode() {
 function handleEnded() {
   currentTime.value = 0
   isPlaying.value = false
+  void clearPlaybackProgress(props.task.id)
+  pendingResumeSeconds.value = null
+  pendingResumeDuration.value = null
+  appliedResumeTaskId.value = ''
 
   if (!audioRef.value) {
     return
@@ -224,6 +363,10 @@ function jumpTo(seconds) {
     audioRef.value.currentTime = seconds
     audioRef.value.play().catch(() => {})
   }
+  void persistPlaybackProgress({
+    force: true,
+    seconds
+  })
 }
 
 function seekAudio(event) {
@@ -238,6 +381,10 @@ function seekAudio(event) {
   if (audioRef.value) {
     audioRef.value.currentTime = nextTime
   }
+  void persistPlaybackProgress({
+    force: true,
+    seconds: nextTime
+  })
 }
 
 function setSegmentRef(element, index) {
@@ -326,7 +473,8 @@ function beginExplainToken(token, segment) {
       const explanation = await explainWord({
         word: token.value,
         sentence: segment.originalText,
-        language: props.task.sourceLanguage || 'ja'
+        language: props.task.sourceLanguage || 'ja',
+        interfaceLanguage: props.interfaceLanguage || 'zh'
       })
       wordDialog.value = {
         ...wordDialog.value,
@@ -383,7 +531,13 @@ async function saveWordToVocabulary() {
 
 watch(
   () => props.task.id,
-  () => {
+  async (taskId, previousTaskId) => {
+    if (previousTaskId) {
+      await persistPlaybackProgress({
+        force: true,
+        taskId: previousTaskId
+      })
+    }
     currentTime.value = 0
     duration.value = 0
     isPlaying.value = false
@@ -393,6 +547,15 @@ watch(
     segmentRefs.value = []
     audioLoadError.value = ''
     wordDialog.value = null
+    appliedResumeTaskId.value = ''
+    pendingResumeSeconds.value = null
+    pendingResumeDuration.value = null
+    const savedProgress = await loadPlaybackProgress(taskId)
+    if (savedProgress) {
+      pendingResumeSeconds.value = savedProgress.currentSeconds
+      pendingResumeDuration.value = savedProgress.duration
+    }
+    await hydrateAudioSource()
     if (audioRef.value) {
       audioRef.value.pause()
       audioRef.value.playbackRate = 1
@@ -411,6 +574,7 @@ watch(activeSegmentIndex, async (index, previousIndex) => {
 })
 
 onBeforeUnmount(() => {
+  void persistPlaybackProgress({ force: true })
   stopPlayback()
   clearLongPress()
 })
@@ -423,13 +587,13 @@ onBeforeUnmount(() => {
       ref="audioRef"
       class="audio-player"
       :class="{ 'audio-player-hidden': isMobile }"
-      :src="audioUrl"
+      :src="resolvedAudioUrl"
       :controls="!isMobile"
       preload="metadata"
       @timeupdate="syncAudioState"
-      @loadedmetadata="syncAudioState"
-      @play="isPlaying = true"
-      @pause="isPlaying = false"
+      @loadedmetadata="syncAudioState(); maybeRestorePlaybackProgress()"
+      @play="isPlaying = true; void warmAudioCache()"
+      @pause="isPlaying = false; void persistPlaybackProgress({ force: true })"
       @ended="handleEnded"
       @error="audioLoadError = '这条历史内容没有可播放的本地音频文件，只能查看字幕。'"
     ></audio>
@@ -457,7 +621,7 @@ onBeforeUnmount(() => {
           </span>
         </template>
       </p>
-      <p class="current-caption-translation">{{ displayTranslation(activeSegment) || '当前语言暂无翻译' }}</p>
+      <p v-if="showTranslation" class="current-caption-translation">{{ displayTranslation(activeSegment) || '当前语言暂无翻译' }}</p>
     </div>
 
     <div class="segment-list" :class="{ 'mobile-segment-list': isMobile }">
@@ -470,7 +634,7 @@ onBeforeUnmount(() => {
         :ref="(element) => setSegmentRef(element, index)"
       >
         <p class="segment-original">{{ segment.originalText }}</p>
-        <p class="segment-translation">{{ displayTranslation(segment) || '当前语言暂无翻译' }}</p>
+        <p v-if="showTranslation" class="segment-translation">{{ displayTranslation(segment) || '当前语言暂无翻译' }}</p>
       </article>
     </div>
 

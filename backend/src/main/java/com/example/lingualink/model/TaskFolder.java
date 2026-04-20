@@ -1,14 +1,28 @@
 package com.example.lingualink.model;
 
+import jakarta.persistence.Column;
+import jakarta.persistence.Entity;
+import jakarta.persistence.Id;
+import jakarta.persistence.Lob;
+import jakarta.persistence.Table;
+
 import java.time.Instant;
 
+@Entity
+@Table(name = "folders")
 public class TaskFolder {
 
+    @Id
     private String id;
+
+    @Column(nullable = false)
     private String name;
     private String parentId;
     private String kind;
     private String contentLanguage;
+
+    @Lob
+    @Column(columnDefinition = "longtext")
     private String coverImageDataUrl;
     private Integer coverOpacity;
     private Instant createdAt;

@@ -1,0 +1,12 @@
+services:
+  backend:
+    image: lingualink-backend-cloud:server
+    container_name: lingualink-backend
+    network_mode: host
+    environment:
+      JAVA_TOOL_OPTIONS: "-Xms128m -Xmx256m -XX:+UseSerialGC"
+      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
+      APP_PROCESSING_ENABLED: "false"
+    volumes:
+      - ./backend/runtime-api:/app/backend/runtime
+    restart: unless-stopped

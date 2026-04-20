@@ -2,15 +2,18 @@ package com.example.lingualink.service;
 
 import com.example.lingualink.dto.CreateFolderRequest;
 import com.example.lingualink.dto.CreateTaskRequest;
+import com.example.lingualink.dto.ImportTaskRequest;
 import com.example.lingualink.dto.UpdateFolderRequest;
 import com.example.lingualink.model.SubtitleSegment;
 import com.example.lingualink.model.TaskFolder;
 import com.example.lingualink.model.TaskStatus;
 import com.example.lingualink.model.TranscriptionTask;
+import com.example.lingualink.repository.TaskFolderRepository;
+import com.example.lingualink.repository.TranscriptionTaskRepository;
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
-import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.annotation.PreDestroy;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
 import java.io.IOException;
@@ -18,47 +21,62 @@ import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.util.Comparator;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
-import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.stream.Stream;
 
 @Service
 public class TaskService {
-
     public static final String DEFAULT_FOLDER_ID = "inbox";
     private static final String FOLDER_KIND_CATEGORY = "category";
     private static final String FOLDER_KIND_CHANNEL = "channel";
 
-    private final Map<String, TranscriptionTask> tasks = new ConcurrentHashMap<>();
-    private final Map<String, TaskFolder> folders = new ConcurrentHashMap<>();
     private final ExecutorService executor = Executors.newFixedThreadPool(2);
     private final ObjectMapper objectMapper = new ObjectMapper().findAndRegisterModules();
     private final Path applicationRoot = Path.of("").toAbsolutePath();
-    private final Path repositoryRoot = resolveRepositoryRoot(applicationRoot);
+    private final Path repositoryRoot = "backend".equals(applicationRoot.getFileName().toString()) ? applicationRoot.getParent() : applicationRoot;
     private final Path backendRoot = repositoryRoot.resolve("backend");
     private final Path runtimeRoot = backendRoot.resolve("runtime");
     private final Path taskRoot = runtimeRoot.resolve("tasks");
-    private final Path folderStore = runtimeRoot.resolve("folders.json");
-    private final Path pythonExecutable = resolvePythonExecutable();
+    private final Path pythonExecutable = Files.exists(backendRoot.resolve(".venv/bin/python")) ? backendRoot.resolve(".venv/bin/python") : Path.of("python3");
 
-    public TaskService() throws IOException {
+    private final boolean processingEnabled;
+    private final AssetPublishService assetPublishService;
+    private final TaskFolderRepository taskFolderRepository;
+    private final TranscriptionTaskRepository transcriptionTaskRepository;
+
+    public TaskService(
+            RuntimeJsonMigrationService runtimeJsonMigrationService,
+            @Value("${app.processing.enabled:true}") boolean processingEnabled,
+            AssetPublishService assetPublishService,
+            TaskFolderRepository taskFolderRepository,
+            TranscriptionTaskRepository transcriptionTaskRepository
+    ) throws IOException {
+        runtimeJsonMigrationService.migrateIfNeeded();
+        this.processingEnabled = processingEnabled;
+        this.assetPublishService = assetPublishService;
+        this.taskFolderRepository = taskFolderRepository;
+        this.transcriptionTaskRepository = transcriptionTaskRepository;
         Files.createDirectories(taskRoot);
         Files.createDirectories(runtimeRoot);
-        loadFolders();
         initializeDefaultFolder();
-        loadTasks();
+        migrateFoldersIfNeeded();
         recoverMissingFolders();
         ensureTasksAssignedToChannels();
+        resumePendingTasks();
     }
 
     public synchronized TranscriptionTask createTask(CreateTaskRequest request) {
+        if (!processingEnabled) {
+            throw new IllegalStateException("当前云端后端不负责解析音频，请在本地处理端完成解析后再同步素材和元数据。");
+        }
         TranscriptionTask task = new TranscriptionTask();
         task.setId(UUID.randomUUID().toString());
         task.setMediaUrl(request.mediaUrl());
@@ -70,73 +88,86 @@ public class TaskService {
         task.setCreatedAt(Instant.now());
         task.setUpdatedAt(Instant.now());
         task.setAudioAvailable(false);
-
-        tasks.put(task.getId(), task);
         persistTask(task);
+        syncTaskMetadataOnCreate(task);
         executor.submit(() -> processTask(task.getId()));
         return task;
     }
 
+    public synchronized TranscriptionTask importTask(ImportTaskRequest request) {
+        TranscriptionTask task = request.id() == null || request.id().isBlank()
+                ? new TranscriptionTask()
+                : transcriptionTaskRepository.findById(request.id()).orElse(new TranscriptionTask());
+        if (task.getId() == null || task.getId().isBlank()) {
+            task.setId(request.id() == null || request.id().isBlank() ? UUID.randomUUID().toString() : request.id());
+        }
+        task.setMediaUrl(request.mediaUrl());
+        task.setFolderId(resolveTaskFolderId(request.folderId()));
+        task.setSourceLanguage(request.sourceLanguage());
+        task.setTargetLanguages(normalizeLanguages(request.targetLanguages()));
+        task.setMediaTitle(request.mediaTitle());
+        task.setSegments(request.segments() == null ? List.of() : request.segments());
+        task.setAudioUrl(trimToNull(request.audioUrl()));
+        task.setSubtitleUrl(trimToNull(request.subtitleUrl()));
+        task.setCoverUrl(trimToNull(request.coverUrl()));
+        task.setStatus(request.status() == null ? TaskStatus.COMPLETED : request.status());
+        task.setProgress(request.progress() == null ? defaultProgressForStatus(task.getStatus()) : request.progress());
+        task.setErrorMessage(request.errorMessage());
+        if (request.audioAvailable() != null) {
+            task.setAudioAvailable(request.audioAvailable());
+        }
+        Instant createdAt = request.createdAt() == null ? task.getCreatedAt() : request.createdAt();
+        task.setCreatedAt(createdAt == null ? Instant.now() : createdAt);
+        task.setUpdatedAt(Instant.now());
+        persistTask(task);
+        return task;
+    }
+
     public synchronized List<TranscriptionTask> listTasks() {
-        return new ArrayList<>(tasks.values()).stream()
-                .sorted(Comparator.comparing(TranscriptionTask::getCreatedAt).reversed())
+        return transcriptionTaskRepository.findAll().stream()
+                .sorted(Comparator.comparing(TranscriptionTask::getCreatedAt, Comparator.nullsLast(Comparator.reverseOrder())))
                 .toList();
     }
 
     public synchronized List<TaskFolder> listFolders() {
-        return new ArrayList<>(folders.values()).stream()
-                .sorted(Comparator.comparing(TaskFolder::getCreatedAt))
+        return taskFolderRepository.findAll().stream()
+                .sorted(Comparator.comparing(TaskFolder::getCreatedAt, Comparator.nullsLast(Comparator.naturalOrder())))
                 .toList();
     }
 
     public synchronized TaskFolder createFolder(CreateFolderRequest request) {
-        String normalizedKind = normalizeFolderKind(request.kind());
-        String normalizedParentId = normalizeParentId(request.parentId(), normalizedKind);
-        String normalizedName = normalizeFolderName(request.name(), null, normalizedParentId);
-
+        String kind = normalizeFolderKind(request.kind());
+        String parentId = normalizeParentId(request.parentId(), kind);
         TaskFolder folder = new TaskFolder();
         folder.setId(UUID.randomUUID().toString());
-        folder.setName(normalizedName);
-        folder.setKind(normalizedKind);
-        folder.setParentId(normalizedParentId);
-        folder.setContentLanguage(resolveFolderContentLanguage(normalizedKind, normalizedParentId, request.contentLanguage()));
-        folder.setCoverImageDataUrl(normalizeCoverImageDataUrl(request.coverImageDataUrl()));
+        folder.setName(normalizeFolderName(request.name(), null, parentId));
+        folder.setKind(kind);
+        folder.setParentId(parentId);
+        folder.setContentLanguage(resolveFolderContentLanguage(kind, parentId, request.contentLanguage()));
+        folder.setCoverImageDataUrl(trimToNull(request.coverImageDataUrl()));
         folder.setCoverOpacity(normalizeCoverOpacity(request.coverOpacity()));
         folder.setCreatedAt(Instant.now());
-        folders.put(folder.getId(), folder);
-        persistFolders();
-        return folder;
+        return taskFolderRepository.save(folder);
     }
 
     public synchronized TaskFolder updateFolder(String folderId, UpdateFolderRequest request) {
-        TaskFolder folder = folders.get(resolveFolderId(folderId));
-        if (folder == null) {
-            throw new IllegalArgumentException("文件夹不存在: " + folderId);
-        }
-
-        String normalizedParentId = folder.getParentId();
+        TaskFolder folder = getFolder(resolveFolderId(folderId));
+        String parentId = folder.getParentId();
         if (request.parentId() != null) {
-            normalizedParentId = normalizeParentId(request.parentId(), normalizeFolderKind(folder.getKind()));
-            folder.setParentId(normalizedParentId);
+            parentId = normalizeParentId(request.parentId(), normalizeFolderKind(folder.getKind()));
+            folder.setParentId(parentId);
         }
-
-        String normalizedName = normalizeFolderName(request.name(), folder.getId(), normalizedParentId);
-        folder.setName(normalizedName);
+        folder.setName(normalizeFolderName(request.name(), folder.getId(), parentId));
         if (request.contentLanguage() != null) {
-            folder.setContentLanguage(resolveFolderContentLanguage(
-                    normalizeFolderKind(folder.getKind()),
-                    normalizedParentId,
-                    request.contentLanguage()
-            ));
+            folder.setContentLanguage(resolveFolderContentLanguage(normalizeFolderKind(folder.getKind()), parentId, request.contentLanguage()));
         }
         if (request.coverImageDataUrl() != null) {
-            folder.setCoverImageDataUrl(normalizeCoverImageDataUrl(request.coverImageDataUrl()));
+            folder.setCoverImageDataUrl(trimToNull(request.coverImageDataUrl()));
         }
         if (request.coverOpacity() != null) {
             folder.setCoverOpacity(normalizeCoverOpacity(request.coverOpacity()));
         }
-        persistFolders();
-        return folder;
+        return taskFolderRepository.save(folder);
     }
 
     public synchronized TranscriptionTask moveTaskToFolder(String taskId, String folderId) {
@@ -152,54 +183,26 @@ public class TaskService {
         if (DEFAULT_FOLDER_ID.equals(resolvedFolderId)) {
             throw new IllegalArgumentException("默认文件夹不能删除");
         }
-
-        List<String> childFolderIds = folders.values().stream()
-                .filter(folder -> resolvedFolderId.equals(folder.getParentId()))
-                .map(TaskFolder::getId)
-                .toList();
-
-        for (TranscriptionTask task : tasks.values()) {
-            if (resolvedFolderId.equals(task.getFolderId()) || childFolderIds.contains(task.getFolderId())) {
+        List<String> childIds = listFolders().stream().filter(folder -> resolvedFolderId.equals(folder.getParentId())).map(TaskFolder::getId).toList();
+        for (TranscriptionTask task : listTasks()) {
+            if (resolvedFolderId.equals(task.getFolderId()) || childIds.contains(task.getFolderId())) {
                 task.setFolderId(DEFAULT_FOLDER_ID);
                 task.setUpdatedAt(Instant.now());
                 persistTask(task);
             }
         }
-
-        for (String childFolderId : childFolderIds) {
-            folders.remove(childFolderId);
-        }
-        folders.remove(resolvedFolderId);
-        persistFolders();
+        taskFolderRepository.deleteAllById(childIds);
+        taskFolderRepository.deleteById(resolvedFolderId);
     }
 
     public synchronized TranscriptionTask getTask(String taskId) {
-        TranscriptionTask task = tasks.get(taskId);
-        if (task == null) {
-            throw new IllegalArgumentException("任务不存在: " + taskId);
-        }
-        return task;
+        return transcriptionTaskRepository.findById(taskId).orElseThrow(() -> new IllegalArgumentException("任务不存在: " + taskId));
     }
 
     public synchronized void deleteTask(String taskId) {
         getTask(taskId);
-        tasks.remove(taskId);
-
-        Path taskDirectory = taskRoot.resolve(taskId);
-        if (Files.exists(taskDirectory)) {
-            try (var paths = Files.walk(taskDirectory)) {
-                paths.sorted(Comparator.reverseOrder())
-                        .forEach(path -> {
-                            try {
-                                Files.deleteIfExists(path);
-                            } catch (IOException exception) {
-                                throw new IllegalStateException("删除任务文件失败", exception);
-                            }
-                        });
-            } catch (IOException exception) {
-                throw new IllegalStateException("删除任务目录失败", exception);
-            }
-        }
+        transcriptionTaskRepository.deleteById(taskId);
+        deleteTaskDirectoryIfExists(taskId);
     }
 
     public Path getTaskAudioPath(String taskId) {
@@ -211,15 +214,62 @@ public class TaskService {
         return audioPath;
     }
 
+    public synchronized Map<String, Object> republishBrokenTasks(String sourceLanguage) {
+        ensureRepublishAllowed();
+        List<String> republished = new ArrayList<>();
+        List<String> skipped = new ArrayList<>();
+        String normalizedLanguage = sourceLanguage == null || sourceLanguage.isBlank() ? null : sourceLanguage.trim().toLowerCase();
+        for (TranscriptionTask task : listTasks()) {
+            if (normalizedLanguage != null && !normalizedLanguage.equalsIgnoreCase(task.getSourceLanguage())) {
+                skipped.add(task.getId());
+                continue;
+            }
+            if (!needsRepublish(task) || !isRepublishableTask(task, taskRoot.resolve(task.getId()))) {
+                skipped.add(task.getId());
+                continue;
+            }
+            publishAgain(task);
+            republished.add(task.getId());
+        }
+        return Map.of("status", "ok", "republishedCount", republished.size(), "republishedTaskIds", republished, "skippedCount", skipped.size());
+    }
+
+    public synchronized TranscriptionTask republishTask(String taskId) {
+        ensureRepublishAllowed();
+        TranscriptionTask task = getTask(taskId);
+        if (!isRepublishableTask(task, taskRoot.resolve(task.getId()))) {
+            throw new IllegalArgumentException("当前任务还没有可重发的本地素材或字幕结果。");
+        }
+        publishAgain(task);
+        return task;
+    }
+
+    private void publishAgain(TranscriptionTask task) {
+        try {
+            prepareTaskForRepublish(task);
+            assetPublishService.publishTaskAssets(task, taskRoot.resolve(task.getId()));
+            persistTask(task);
+        } catch (Exception exception) {
+            throw new IllegalStateException("重新发布任务失败: " + task.getId() + "，原因: " + exception.getMessage(), exception);
+        }
+    }
+
+    private void ensureRepublishAllowed() {
+        if (!processingEnabled) {
+            throw new IllegalStateException("当前云端后端不负责重新发布旧素材，请在本地处理端执行此操作。");
+        }
+        if (!assetPublishService.isPublishingConfigured()) {
+            throw new IllegalStateException("当前本地处理端还没有配置对象存储或云端回写地址。");
+        }
+    }
+
     private void processTask(String taskId) {
         TranscriptionTask task = getTask(taskId);
         Path taskDirectory = taskRoot.resolve(taskId);
         Path outputFile = taskDirectory.resolve("result.json");
-
         try {
             Files.createDirectories(taskDirectory);
             updateStatus(task, TaskStatus.PROCESSING, 10, null);
-
             ProcessBuilder builder = new ProcessBuilder(
                     pythonExecutable.toString(),
                     backendRoot.resolve("scripts/process_media.py").toString(),
@@ -230,21 +280,23 @@ public class TaskService {
             );
             builder.directory(repositoryRoot.toFile());
             builder.redirectErrorStream(true);
-
             Process process = builder.start();
             String logs;
             try (InputStream inputStream = process.getInputStream()) {
                 logs = new String(inputStream.readAllBytes(), StandardCharsets.UTF_8);
             }
-            int exitCode = process.waitFor();
-            if (exitCode != 0) {
+            if (process.waitFor() != 0) {
                 throw new IllegalStateException(cleanProcessMessage(logs));
             }
-
             TaskResult result = objectMapper.readValue(outputFile.toFile(), TaskResult.class);
             task.setMediaTitle(result.mediaTitle());
             task.setSegments(result.segments() == null ? List.of() : result.segments());
             task.setAudioAvailable(Files.exists(taskDirectory.resolve("source.mp3")));
+            if (assetPublishService.isPublishingConfigured()) {
+                assetPublishService.publishTaskAssets(task, taskDirectory);
+                cleanupLocalProcessingArtifacts(taskDirectory);
+                task.setAudioAvailable(task.getAudioUrl() != null && !task.getAudioUrl().isBlank());
+            }
             updateStatus(task, TaskStatus.COMPLETED, 100, null);
         } catch (Exception exception) {
             task.setAudioAvailable(Files.exists(taskDirectory.resolve("source.mp3")));
@@ -252,275 +304,157 @@ public class TaskService {
         }
     }
 
-    private synchronized void loadTasks() throws IOException {
-        if (!Files.exists(taskRoot)) {
-            return;
-        }
-
-        try (var taskDirectories = Files.list(taskRoot)) {
-            taskDirectories
-                    .filter(Files::isDirectory)
-                    .forEach(taskDirectory -> {
-                        Path taskFile = taskDirectory.resolve("task.json");
-                        try {
-                            TranscriptionTask task = Files.exists(taskFile)
-                                    ? objectMapper.readValue(taskFile.toFile(), TranscriptionTask.class)
-                                    : loadLegacyTask(taskDirectory);
-                            if (task == null) {
-                                return;
-                            }
-                            if (task.getFolderId() == null || task.getFolderId().isBlank()) {
-                                task.setFolderId(DEFAULT_FOLDER_ID);
-                            }
-                            task.setFolderId(resolveTaskFolderId(task.getFolderId()));
-                            updateAudioAvailability(task);
-                            tasks.put(task.getId(), task);
-                            persistTask(task);
-                        } catch (IOException ignored) {
-                        }
-                    });
+    private void migrateFoldersIfNeeded() {
+        for (TaskFolder folder : listFolders()) {
+            boolean changed = false;
+            if (folder.getKind() == null || folder.getKind().isBlank()) {
+                folder.setKind(folder.getParentId() == null || folder.getParentId().isBlank() ? FOLDER_KIND_CATEGORY : FOLDER_KIND_CHANNEL);
+                changed = true;
+            }
+            if (folder.getContentLanguage() == null || folder.getContentLanguage().isBlank()) {
+                folder.setContentLanguage(inferFolderLanguage(folder.getName()));
+                changed = true;
+            }
+            if (folder.getCoverImageDataUrl() != null && folder.getCoverImageDataUrl().isBlank()) {
+                folder.setCoverImageDataUrl(null);
+                changed = true;
+            }
+            if (folder.getCoverOpacity() == null) {
+                folder.setCoverOpacity(50);
+                changed = true;
+            }
+            if (changed) {
+                taskFolderRepository.save(folder);
+            }
         }
     }
 
-    private synchronized void recoverMissingFolders() {
-        boolean changed = false;
+    private void recoverMissingFolders() {
         int recoveredIndex = 1;
-
-        for (TranscriptionTask task : tasks.values()) {
-            String folderId = task.getFolderId();
-            if (folderId == null || folderId.isBlank()) {
+        List<TaskFolder> folders = listFolders();
+        for (TranscriptionTask task : listTasks()) {
+            if (task.getFolderId() == null || task.getFolderId().isBlank()) {
                 task.setFolderId(DEFAULT_FOLDER_ID);
                 persistTask(task);
-                changed = true;
                 continue;
             }
-
-            if (folders.containsKey(folderId)) {
+            boolean exists = folders.stream().anyMatch(folder -> task.getFolderId().equals(folder.getId()));
+            if (exists) {
                 continue;
             }
-
-            TaskFolder recoveredFolder = new TaskFolder();
-            recoveredFolder.setId(folderId);
-            recoveredFolder.setName("恢复分组 " + recoveredIndex++);
-            recoveredFolder.setKind(FOLDER_KIND_CHANNEL);
-            recoveredFolder.setParentId(DEFAULT_FOLDER_ID);
-            recoveredFolder.setContentLanguage("ja");
-            recoveredFolder.setCreatedAt(task.getCreatedAt() == null ? Instant.now() : task.getCreatedAt());
-            folders.put(folderId, recoveredFolder);
-            changed = true;
-        }
-
-        if (changed) {
-            persistFolders();
+            TaskFolder recovered = new TaskFolder();
+            recovered.setId(task.getFolderId());
+            recovered.setName("恢复分组 " + recoveredIndex++);
+            recovered.setKind(FOLDER_KIND_CHANNEL);
+            recovered.setParentId(DEFAULT_FOLDER_ID);
+            recovered.setContentLanguage("ja");
+            recovered.setCreatedAt(task.getCreatedAt() == null ? Instant.now() : task.getCreatedAt());
+            taskFolderRepository.save(recovered);
+            folders = listFolders();
         }
     }
 
-    private synchronized void ensureTasksAssignedToChannels() {
-        boolean changed = false;
-        for (TranscriptionTask task : tasks.values()) {
+    private void ensureTasksAssignedToChannels() {
+        for (TranscriptionTask task : listTasks()) {
             String resolvedFolderId = resolveTaskFolderId(task.getFolderId());
             if (!resolvedFolderId.equals(task.getFolderId())) {
                 task.setFolderId(resolvedFolderId);
-                if (task.getUpdatedAt() == null) {
-                    task.setUpdatedAt(Instant.now());
-                }
+                task.setUpdatedAt(task.getUpdatedAt() == null ? Instant.now() : task.getUpdatedAt());
                 persistTask(task);
-                changed = true;
             }
         }
-        if (changed) {
-            persistFolders();
-        }
     }
 
-    private TranscriptionTask loadLegacyTask(Path taskDirectory) throws IOException {
-        Path resultFile = taskDirectory.resolve("result.json");
-        if (!Files.exists(resultFile)) {
-            return null;
-        }
-
-        TaskResult result = objectMapper.readValue(resultFile.toFile(), TaskResult.class);
-        Instant timestamp = Files.getLastModifiedTime(resultFile).toInstant();
-
-        TranscriptionTask task = new TranscriptionTask();
-        task.setId(taskDirectory.getFileName().toString());
-        task.setMediaUrl("历史任务");
-        task.setFolderId(DEFAULT_FOLDER_ID);
-        task.setSourceLanguage("unknown");
-        task.setTargetLanguages(List.of("zh", "ja", "en"));
-        task.setStatus(TaskStatus.COMPLETED);
-        task.setProgress(100);
-        task.setCreatedAt(timestamp);
-        task.setUpdatedAt(timestamp);
-        task.setMediaTitle(result.mediaTitle());
-        task.setSegments(result.segments() == null ? List.of() : result.segments());
-        updateAudioAvailability(task);
-        return task;
-    }
-
-    private synchronized void loadFolders() throws IOException {
-        if (!Files.exists(folderStore)) {
-            persistFolders();
+    private void resumePendingTasks() {
+        if (!processingEnabled) {
             return;
         }
-
-        List<TaskFolder> storedFolders = objectMapper.readValue(folderStore.toFile(), new TypeReference<>() {
-        });
-        for (TaskFolder folder : storedFolders) {
-            migrateFolder(folder);
-            folders.put(folder.getId(), folder);
-        }
-        initializeDefaultFolder();
+        transcriptionTaskRepository.findByStatusIn(List.of(TaskStatus.QUEUED, TaskStatus.PROCESSING)).stream()
+                .sorted(Comparator.comparing(TranscriptionTask::getUpdatedAt, Comparator.nullsLast(Comparator.reverseOrder())))
+                .forEach(task -> executor.submit(() -> processTask(task.getId())));
     }
 
-    private synchronized void persistTask(TranscriptionTask task) {
-        try {
-            Path taskDirectory = taskRoot.resolve(task.getId());
-            Files.createDirectories(taskDirectory);
-            updateAudioAvailability(task);
-            objectMapper.writerWithDefaultPrettyPrinter().writeValue(taskDirectory.resolve("task.json").toFile(), task);
-        } catch (IOException exception) {
-            throw new IllegalStateException("保存任务失败", exception);
-        }
+    private void persistTask(TranscriptionTask task) {
+        task.setAudioAvailable((task.getAudioUrl() != null && !task.getAudioUrl().isBlank()) || Files.exists(taskRoot.resolve(task.getId()).resolve("source.mp3")));
+        transcriptionTaskRepository.save(task);
     }
 
-    private void updateAudioAvailability(TranscriptionTask task) {
-        task.setAudioAvailable(Files.exists(taskRoot.resolve(task.getId()).resolve("source.mp3")));
-    }
-
-    private synchronized void persistFolders() {
-        try {
-            objectMapper.writerWithDefaultPrettyPrinter().writeValue(folderStore.toFile(), listFolders());
-        } catch (IOException exception) {
-            throw new IllegalStateException("保存文件夹失败", exception);
-        }
-    }
-
-    private synchronized void initializeDefaultFolder() {
-        if (folders.containsKey(DEFAULT_FOLDER_ID)) {
-            TaskFolder folder = folders.get(DEFAULT_FOLDER_ID);
+    private void initializeDefaultFolder() {
+        TaskFolder folder = taskFolderRepository.findById(DEFAULT_FOLDER_ID).orElse(null);
+        if (folder == null) {
+            folder = new TaskFolder();
+            folder.setId(DEFAULT_FOLDER_ID);
+            folder.setName("未分类");
+            folder.setKind(FOLDER_KIND_CATEGORY);
+            folder.setContentLanguage("ja");
+            folder.setCreatedAt(Instant.EPOCH);
+        } else {
             if (folder.getKind() == null || folder.getKind().isBlank()) {
                 folder.setKind(FOLDER_KIND_CATEGORY);
             }
             if (folder.getContentLanguage() == null || folder.getContentLanguage().isBlank()) {
                 folder.setContentLanguage("ja");
             }
-            return;
         }
-        TaskFolder folder = new TaskFolder();
-        folder.setId(DEFAULT_FOLDER_ID);
-        folder.setName("未分类");
-        folder.setKind(FOLDER_KIND_CATEGORY);
-        folder.setContentLanguage("ja");
-        folder.setCreatedAt(Instant.EPOCH);
-        folders.put(folder.getId(), folder);
-        persistFolders();
+        taskFolderRepository.save(folder);
     }
 
-    private void migrateFolder(TaskFolder folder) {
-        if (folder.getKind() == null || folder.getKind().isBlank()) {
-            boolean looksLikeLegacyTopLevel = folder.getParentId() == null || folder.getParentId().isBlank();
-            folder.setKind(looksLikeLegacyTopLevel ? FOLDER_KIND_CATEGORY : FOLDER_KIND_CHANNEL);
-        }
-
-        if (folder.getContentLanguage() == null || folder.getContentLanguage().isBlank()) {
-            folder.setContentLanguage(inferFolderLanguage(folder.getName()));
-        }
-        if (folder.getCoverImageDataUrl() != null && folder.getCoverImageDataUrl().isBlank()) {
-            folder.setCoverImageDataUrl(null);
-        }
-        if (folder.getCoverOpacity() == null) {
-            folder.setCoverOpacity(50);
-        }
-    }
-
-    private String inferFolderLanguage(String name) {
-        String normalized = name == null ? "" : name.toLowerCase();
-        if (normalized.contains("日")) {
-            return "ja";
-        }
-        return "en";
-    }
-
-    private List<String> normalizeLanguages(String languageCsv) {
-        return Arrays.stream(languageCsv.split(","))
-                .map(String::trim)
-                .filter(language -> !language.isEmpty())
-                .distinct()
-                .sorted()
-                .toList();
+    private TaskFolder getFolder(String folderId) {
+        return taskFolderRepository.findById(folderId).orElseThrow(() -> new IllegalArgumentException("文件夹不存在: " + folderId));
     }
 
     private String resolveFolderId(String folderId) {
         String resolved = folderId == null || folderId.isBlank() ? DEFAULT_FOLDER_ID : folderId;
-        if (!folders.containsKey(resolved)) {
+        if (!taskFolderRepository.existsById(resolved)) {
             throw new IllegalArgumentException("文件夹不存在: " + resolved);
         }
         return resolved;
     }
 
     private String resolveTaskFolderId(String folderId) {
-        String resolvedFolderId = resolveFolderId(folderId);
-        TaskFolder folder = folders.get(resolvedFolderId);
+        String resolved = folderId == null || folderId.isBlank() ? DEFAULT_FOLDER_ID : folderId.trim();
+        TaskFolder folder = taskFolderRepository.findById(resolved).orElse(null);
         if (folder == null) {
-            throw new IllegalArgumentException("文件夹不存在: " + resolvedFolderId);
+            if (processingEnabled) {
+                return resolved;
+            }
+            throw new IllegalArgumentException("文件夹不存在: " + resolved);
         }
-        if (!FOLDER_KIND_CATEGORY.equals(normalizeFolderKind(folder.getKind()))) {
-            return resolvedFolderId;
-        }
-        return ensureChannelUnderCategory(resolvedFolderId);
+        return FOLDER_KIND_CATEGORY.equals(normalizeFolderKind(folder.getKind())) ? ensureChannelUnderCategory(resolved) : resolved;
     }
 
     private String ensureChannelUnderCategory(String categoryId) {
-        TaskFolder existingChannel = folders.values().stream()
+        TaskFolder channel = listFolders().stream()
                 .filter(folder -> FOLDER_KIND_CHANNEL.equals(normalizeFolderKind(folder.getKind())))
                 .filter(folder -> categoryId.equals(folder.getParentId()))
                 .sorted(Comparator.comparing(TaskFolder::getCreatedAt, Comparator.nullsLast(Comparator.naturalOrder())))
                 .findFirst()
                 .orElse(null);
-        if (existingChannel != null) {
-            return existingChannel.getId();
+        if (channel != null) {
+            return channel.getId();
         }
-
-        TaskFolder categoryFolder = folders.get(categoryId);
-        if (categoryFolder == null) {
-            throw new IllegalArgumentException("上级大类不存在: " + categoryId);
-        }
-
-        TaskFolder channel = new TaskFolder();
-        channel.setId(UUID.randomUUID().toString());
-        channel.setName(normalizeFolderName("未命名广播", null, categoryId));
-        channel.setKind(FOLDER_KIND_CHANNEL);
-        channel.setParentId(categoryId);
-        channel.setContentLanguage(resolveFolderContentLanguage(
-                FOLDER_KIND_CHANNEL,
-                categoryId,
-                categoryFolder.getContentLanguage()
-        ));
-        channel.setCoverImageDataUrl(null);
-        channel.setCoverOpacity(50);
-        channel.setCreatedAt(Instant.now());
-        folders.put(channel.getId(), channel);
-        persistFolders();
-        return channel.getId();
+        TaskFolder category = getFolder(categoryId);
+        TaskFolder created = new TaskFolder();
+        created.setId(UUID.randomUUID().toString());
+        created.setName(normalizeFolderName("未命名广播", null, categoryId));
+        created.setKind(FOLDER_KIND_CHANNEL);
+        created.setParentId(categoryId);
+        created.setContentLanguage(resolveFolderContentLanguage(FOLDER_KIND_CHANNEL, categoryId, category.getContentLanguage()));
+        created.setCoverOpacity(50);
+        created.setCreatedAt(Instant.now());
+        return taskFolderRepository.save(created).getId();
     }
 
-    private String normalizeFolderName(String folderName, String currentFolderId, String parentId) {
-        String normalizedName = folderName == null ? "" : folderName.trim();
-        if (normalizedName.isEmpty()) {
+    private String normalizeFolderName(String name, String currentFolderId, String parentId) {
+        String normalized = name == null ? "" : name.trim();
+        if (normalized.isEmpty()) {
             throw new IllegalArgumentException("文件夹名称不能为空");
         }
-
-        boolean exists = folders.values().stream()
-                .anyMatch(folder ->
-                        !folder.getId().equals(currentFolderId)
-                                && normalizeNullable(folder.getParentId()).equals(normalizeNullable(parentId))
-                                && folder.getName().equalsIgnoreCase(normalizedName)
-                );
+        boolean exists = listFolders().stream().anyMatch(folder -> !folder.getId().equals(currentFolderId) && normalizeNullable(folder.getParentId()).equals(normalizeNullable(parentId)) && folder.getName().equalsIgnoreCase(normalized));
         if (exists) {
-            throw new IllegalArgumentException("文件夹已存在: " + normalizedName);
+            throw new IllegalArgumentException("文件夹已存在: " + normalized);
         }
-        return normalizedName;
+        return normalized;
     }
 
     private String normalizeFolderKind(String kind) {
@@ -538,16 +472,11 @@ public class TaskService {
         if (FOLDER_KIND_CATEGORY.equals(kind)) {
             return null;
         }
-
         if (parentId == null || parentId.isBlank()) {
             throw new IllegalArgumentException("广播必须归属到一个大类下面");
         }
-
-        TaskFolder parentFolder = folders.get(parentId);
-        if (parentFolder == null) {
-            throw new IllegalArgumentException("上级大类不存在");
-        }
-        if (!FOLDER_KIND_CATEGORY.equals(normalizeFolderKind(parentFolder.getKind()))) {
+        TaskFolder parent = getFolder(parentId);
+        if (!FOLDER_KIND_CATEGORY.equals(normalizeFolderKind(parent.getKind()))) {
             throw new IllegalArgumentException("广播只能挂在大类下面");
         }
         return parentId;
@@ -555,31 +484,37 @@ public class TaskService {
 
     private String resolveFolderContentLanguage(String kind, String parentId, String contentLanguage) {
         if (FOLDER_KIND_CHANNEL.equals(kind)) {
-            TaskFolder parentFolder = folders.get(parentId);
-            return parentFolder == null ? normalizeContentLanguage(contentLanguage) : normalizeContentLanguage(parentFolder.getContentLanguage());
+            TaskFolder parent = taskFolderRepository.findById(parentId).orElse(null);
+            return parent == null ? normalizeContentLanguage(contentLanguage) : normalizeContentLanguage(parent.getContentLanguage());
         }
         return normalizeContentLanguage(contentLanguage);
     }
 
     private String normalizeContentLanguage(String contentLanguage) {
-        String normalized = contentLanguage == null || contentLanguage.isBlank()
-                ? "en"
-                : contentLanguage.trim().toLowerCase();
-        if (!List.of("en", "ja").contains(normalized)) {
-            throw new IllegalArgumentException("内容语言只支持 en 或 ja");
+        String normalized = contentLanguage == null || contentLanguage.isBlank() ? "en" : contentLanguage.trim().toLowerCase();
+        if (!List.of("zh", "en", "ja").contains(normalized)) {
+            throw new IllegalArgumentException("内容语言只支持 zh、en 或 ja");
         }
         return normalized;
+    }
+
+    private List<String> normalizeLanguages(String languageCsv) {
+        return Arrays.stream(languageCsv.split(",")).map(String::trim).filter(language -> !language.isEmpty()).distinct().sorted().toList();
+    }
+
+    private String inferFolderLanguage(String name) {
+        return name != null && name.toLowerCase().contains("日") ? "ja" : "en";
     }
 
     private String normalizeNullable(String value) {
         return value == null ? "" : value.trim();
     }
 
-    private String normalizeCoverImageDataUrl(String coverImageDataUrl) {
-        if (coverImageDataUrl == null) {
+    private String trimToNull(String value) {
+        if (value == null) {
             return null;
         }
-        String normalized = coverImageDataUrl.trim();
+        String normalized = value.trim();
         return normalized.isEmpty() ? null : normalized;
     }
 
@@ -593,34 +528,122 @@ public class TaskService {
         return coverOpacity;
     }
 
-    private Path resolveRepositoryRoot(Path currentDirectory) {
-        if ("backend".equals(currentDirectory.getFileName().toString())) {
-            return currentDirectory.getParent();
-        }
-        return currentDirectory;
+    private boolean needsRepublish(TranscriptionTask task) {
+        return isLegacyPrivateAudioUrl(task.getAudioUrl()) || isLegacyPrivateAudioUrl(task.getSubtitleUrl());
     }
 
-    private Path resolvePythonExecutable() {
-        Path virtualEnvPython = backendRoot.resolve(".venv/bin/python");
-        if (Files.exists(virtualEnvPython)) {
-            return virtualEnvPython;
-        }
-        return Path.of("python3");
+    private boolean isRepublishableTask(TranscriptionTask task, Path taskDirectory) {
+        return Files.exists(taskDirectory.resolve("source.mp3")) && task.getMediaTitle() != null && !task.getMediaTitle().isBlank() && task.getSegments() != null && !task.getSegments().isEmpty();
     }
 
-    private synchronized void updateStatus(TranscriptionTask task, TaskStatus status, int progress, String errorMessage) {
+    private void prepareTaskForRepublish(TranscriptionTask task) {
+        task.setStatus(TaskStatus.COMPLETED);
+        task.setProgress(100);
+        task.setErrorMessage(null);
+        task.setUpdatedAt(Instant.now());
+    }
+
+    private boolean isLegacyPrivateAudioUrl(String url) {
+        if (url == null || url.isBlank()) {
+            return true;
+        }
+        String normalized = url.trim().toLowerCase();
+        return normalized.contains("http://minio:9000/") || normalized.contains("https://minio:9000/") || normalized.contains("http://localhost:9000/") || normalized.contains("https://localhost:9000/");
+    }
+
+    private void updateStatus(TranscriptionTask task, TaskStatus status, int progress, String errorMessage) {
         task.setStatus(status);
         task.setProgress(progress);
         task.setErrorMessage(errorMessage);
         task.setUpdatedAt(Instant.now());
         persistTask(task);
+        if (assetPublishService.isCloudSyncConfigured()) {
+            try {
+                assetPublishService.syncTaskMetadata(task);
+            } catch (Exception ignored) {
+            }
+        }
+    }
+
+    private int defaultProgressForStatus(TaskStatus status) {
+        if (status == null) {
+            return 0;
+        }
+        return switch (status) {
+            case QUEUED -> 0;
+            case PROCESSING -> 10;
+            case COMPLETED, FAILED -> 100;
+        };
+    }
+
+    private void syncTaskMetadataOnCreate(TranscriptionTask task) {
+        if (!assetPublishService.isCloudSyncConfigured()) {
+            return;
+        }
+        try {
+            assetPublishService.syncTaskMetadata(task);
+        } catch (Exception exception) {
+            transcriptionTaskRepository.deleteById(task.getId());
+            deleteTaskDirectoryIfExists(task.getId());
+            throw new IllegalStateException("同步任务到 API 端失败，请重试。", exception);
+        }
+    }
+
+    private void deleteTaskDirectoryIfExists(String taskId) {
+        Path taskDirectory = taskRoot.resolve(taskId);
+        if (!Files.exists(taskDirectory)) {
+            return;
+        }
+        try (Stream<Path> paths = Files.walk(taskDirectory)) {
+            paths.sorted(Comparator.reverseOrder()).forEach(path -> {
+                try {
+                    Files.deleteIfExists(path);
+                } catch (IOException exception) {
+                    throw new IllegalStateException("删除任务目录失败", exception);
+                }
+            });
+        } catch (IOException exception) {
+            throw new IllegalStateException("删除任务目录失败", exception);
+        }
+    }
+
+    private void cleanupLocalProcessingArtifacts(Path taskDirectory) {
+        deleteIfExists(taskDirectory.resolve("source.mp3"));
+        deleteIfExists(taskDirectory.resolve("normalized.wav"));
+        deleteIfExists(taskDirectory.resolve("result.json"));
+        deleteIfExists(taskDirectory.resolve("subtitles.json"));
+        deleteRecursively(taskDirectory.resolve("local_chunks"));
+    }
+
+    private void deleteIfExists(Path path) {
+        try {
+            Files.deleteIfExists(path);
+        } catch (IOException exception) {
+            throw new IllegalStateException("清理本地处理中间文件失败: " + path.getFileName(), exception);
+        }
+    }
+
+    private void deleteRecursively(Path directoryPath) {
+        if (!Files.exists(directoryPath)) {
+            return;
+        }
+        try (Stream<Path> paths = Files.walk(directoryPath)) {
+            paths.sorted(Comparator.reverseOrder()).forEach(path -> {
+                try {
+                    Files.deleteIfExists(path);
+                } catch (IOException exception) {
+                    throw new IllegalStateException("清理本地处理中间目录失败: " + directoryPath.getFileName(), exception);
+                }
+            });
+        } catch (IOException exception) {
+            throw new IllegalStateException("清理本地处理中间目录失败: " + directoryPath.getFileName(), exception);
+        }
     }
 
     private String cleanProcessMessage(String logs) {
         if (logs == null || logs.isBlank()) {
             return "媒体处理失败";
         }
-
         String[] lines = logs.replace("\r", "\n").split("\n");
         for (int index = lines.length - 1; index >= 0; index--) {
             String line = lines[index].trim();

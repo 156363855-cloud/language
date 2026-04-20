@@ -1,0 +1,32 @@
+spring:
+  application:
+    name: lingua-link-backend
+
+server:
+  port: 8080
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
+
+app:
+  processing:
+    enabled: true
+  cloud:
+    api-base-url: ${APP_CLOUD_API_BASE_URL:}
+    import-token: ${APP_CLOUD_IMPORT_TOKEN:}
+  storage:
+    endpoint: ${APP_STORAGE_ENDPOINT:}
+    public-base-url: ${APP_STORAGE_PUBLIC_BASE_URL:}
+    access-key: ${APP_STORAGE_ACCESS_KEY:}
+    secret-key: ${APP_STORAGE_SECRET_KEY:}
+    bucket: ${APP_STORAGE_BUCKET:lingualink-assets}
+    oci:
+      namespace: ${APP_STORAGE_OCI_NAMESPACE:}
+      region: ${APP_STORAGE_OCI_REGION:}
+      tenancy: ${APP_STORAGE_OCI_TENANCY:}
+      user: ${APP_STORAGE_OCI_USER:}
+      fingerprint: ${APP_STORAGE_OCI_FINGERPRINT:}
+      key-file: ${APP_STORAGE_OCI_KEY_FILE:}
