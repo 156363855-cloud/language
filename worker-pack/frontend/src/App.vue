@@ -26,6 +26,7 @@ import {
   updateProfile,
   updateFolder
 } from './api/tasks'
+import { parseBulkMediaInput, readBatchFileAsText, resolveDesktopAddMediaUrls } from './utils/bulkMediaUrls.js'
 import {
   cleanupExpiredAudioCache,
   clearCachedLibrarySnapshot,
@@ -147,6 +148,7 @@ let pollTimer = null
 const selectedTask = computed(() => tasks.value.find((task) => task.id === selectedTaskId.value) || null)
 const isNativeApp = computed(() => Capacitor.isNativePlatform())
 const isMobileLayout = computed(() => viewportWidth.value <= 820)
+const showDesktopEpisodeProgressPct = computed(() => viewportWidth.value > 1024)
 const preferredContentLanguage = computed(() => currentUser.value?.preferredContentLanguage || 'en')
 const visibleTasks = computed(() => {
   if (!isMobileLayout.value) {
@@ -321,25 +323,30 @@ const desktopEpisodeTasks = computed(() => {
     .filter((task) => task.folderId === selectedDesktopChannelId.value)
     .sort((left, right) => new Date(right.createdAt) - new Date(left.createdAt))
 })
-const parsedBulkLinks = computed(() =>
-  bulkMediaInput.value
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .filter(Boolean)
-    .map((line) => line.replace(/^-\s*/, ''))
-    .map((line) => {
-      const urlMatch = line.match(/https?:\/\/\S+/)
-      if (urlMatch) {
-        return urlMatch[0]
-      }
-      const yamlValueMatch = line.match(/^[^:]+:\s*(https?:\/\/\S+)$/)
-      return yamlValueMatch ? yamlValueMatch[1] : line
-    })
-    .filter((value, index, items) => /^https?:\/\//.test(value) && items.indexOf(value) === index)
-)
+const parsedBulkLinks = computed(() => parseBulkMediaInput(bulkMediaInput.value))
 
 function updateViewportWidth() {
   viewportWidth.value = window.innerWidth
+}
+
+function formatMobileTaskListStatus(task) {
+  if (!task) {
+    return ''
+  }
+  const s = String(task.status ?? '').trim()
+  if (!s) {
+    return ''
+  }
+  const std = s.match(/^(QUEUED|PROCESSING|COMPLETED|FAILED)\b/i)
+  if (std) {
+    return std[1].toUpperCase()
+  }
+  let t = s.split(/[·•∙⋅・]/u)[0].trim()
+  t = t.replace(/\s+\d{1,3}\s*[%％]\s*$/u, '').replace(/\d{1,3}\s*[%％]$/u, '').trim()
+  if (/%/.test(t)) {
+    t = t.replace(/\s*[·•]?\s*\d{1,3}\s*[%％]\s*$/u, '').trim()
+  }
+  return t
 }
 
 function readFileAsDataUrl(file) {
@@ -891,7 +898,7 @@ async function handleBatchFileSelected(event) {
   }
   try {
     batchFileName.value = file.name
-    bulkMediaInput.value = await file.text()
+    bulkMediaInput.value = await readBatchFileAsText(file)
   } catch (error) {
     errorMessage.value = '读取批量链接文件失败'
   }
@@ -953,14 +960,63 @@ async function submitAdminChannel() {
   }
 }
 
+async function runCreateDesktopTasks(urls, { fromBulk = false } = {}) {
+  if (urls.length === 0) {
+    return
+  }
+  isSubmitting.value = true
+  errorMessage.value = ''
+  successMessage.value = ''
+  try {
+    const folderId = desktopTaskChannelId.value
+    const created = []
+    for (const mediaUrl of urls) {
+      created.push(
+        await createTask({
+          mediaUrl,
+          sourceLanguage: form.value.sourceLanguage,
+          targetLanguages: form.value.targetLanguages,
+          folderId
+        })
+      )
+    }
+    tasks.value = [...created, ...tasks.value]
+    selectedDesktopChannelId.value = folderId
+    if (created.length === 1) {
+      const task = created[0]
+      selectedFolderId.value = task.folderId
+      selectedTaskId.value = task.id
+      currentView.value = 'dashboard'
+    }
+    successMessage.value = created.length > 1 ? `已批量添加 ${created.length} 条链接` : '已添加任务'
+    if (fromBulk) {
+      bulkMediaInput.value = ''
+      batchFileName.value = ''
+    }
+    startPolling()
+  } catch (error) {
+    errorMessage.value = error.message
+  } finally {
+    isSubmitting.value = false
+  }
+}
+
 async function submitDesktopTask() {
   if (!desktopTaskChannelId.value) {
     errorMessage.value = '先选择一个二类广播，再添加内容'
     return
   }
   form.value.folderId = desktopTaskChannelId.value
-  await submitTask()
-  selectedDesktopChannelId.value = desktopTaskChannelId.value
+  const resolved = resolveDesktopAddMediaUrls({
+    singleLine: form.value.mediaUrl,
+    bulkText: bulkMediaInput.value,
+    strategy: 'smart'
+  })
+  if (!resolved.ok) {
+    errorMessage.value = resolved.error
+    return
+  }
+  await runCreateDesktopTasks(resolved.urls, { fromBulk: resolved.fromBulk })
 }
 
 async function submitDesktopBatchTasks() {
@@ -968,36 +1024,17 @@ async function submitDesktopBatchTasks() {
     errorMessage.value = '先选择一个二类广播，再批量添加链接'
     return
   }
-  if (parsedBulkLinks.value.length === 0) {
-    errorMessage.value = '请先粘贴链接，或上传一个 yml 文件'
+  form.value.folderId = desktopTaskChannelId.value
+  const resolved = resolveDesktopAddMediaUrls({
+    singleLine: '',
+    bulkText: bulkMediaInput.value,
+    strategy: 'batch-only'
+  })
+  if (!resolved.ok) {
+    errorMessage.value = resolved.error
     return
   }
-
-  isSubmitting.value = true
-  errorMessage.value = ''
-  successMessage.value = ''
-  try {
-    const createdTasks = []
-    for (const mediaUrl of parsedBulkLinks.value) {
-      const task = await createTask({
-        mediaUrl,
-        sourceLanguage: form.value.sourceLanguage,
-        targetLanguages: form.value.targetLanguages,
-        folderId: desktopTaskChannelId.value
-      })
-      createdTasks.push(task)
-    }
-    tasks.value = [...createdTasks, ...tasks.value]
-    selectedDesktopChannelId.value = desktopTaskChannelId.value
-    successMessage.value = `已批量添加 ${createdTasks.length} 条链接`
-    bulkMediaInput.value = ''
-    batchFileName.value = ''
-    startPolling()
-  } catch (error) {
-    errorMessage.value = error.message
-  } finally {
-    isSubmitting.value = false
-  }
+  await runCreateDesktopTasks(resolved.urls, { fromBulk: true })
 }
 
 function openFolderEditor(mode) {
@@ -1068,24 +1105,6 @@ async function removeFolderFromEditor() {
     successMessage.value = folderEditorMode.value === 'category' ? '已删除大类' : '已删除广播'
   } catch (error) {
     errorMessage.value = error.message
-  }
-}
-
-async function submitTask() {
-  isSubmitting.value = true
-  errorMessage.value = ''
-  successMessage.value = ''
-  try {
-    const task = await createTask(form.value)
-    tasks.value = [task, ...tasks.value]
-    selectedFolderId.value = task.folderId
-    selectedTaskId.value = task.id
-    currentView.value = 'dashboard'
-    startPolling()
-  } catch (error) {
-    errorMessage.value = error.message
-  } finally {
-    isSubmitting.value = false
   }
 }
 
@@ -1701,10 +1720,10 @@ onBeforeUnmount(() => {
                 @click="openTaskDetail(task.id)"
               >
                 <div class="task-item-topline">
-                  <span class="task-status">{{ task.status }} · {{ task.progress }}%</span>
+                  <span class="task-status">{{ formatMobileTaskListStatus(task) }}</span>
                   <span class="task-open-hint">打开音频</span>
                 </div>
-                <strong>{{ task.mediaTitle || task.mediaUrl }}</strong>
+                <strong class="task-title-clip">{{ task.mediaTitle || task.mediaUrl }}</strong>
                 <small>{{ new Date(task.createdAt).toLocaleString() }}</small>
               </button>
             </div>
@@ -1891,11 +1910,19 @@ onBeforeUnmount(() => {
             <form class="task-form desktop-task-form" @submit.prevent="submitDesktopTask">
               <label class="form-span-2">
                 <span>媒体链接</span>
-                <textarea v-model.trim="form.mediaUrl" rows="3" placeholder="单条链接直接贴这里"></textarea>
+                <textarea
+                  v-model.trim="form.mediaUrl"
+                  rows="3"
+                  placeholder="只添加一条时填这里。若下面「批量」里已有内容，会优先用批量，不必填这格。"
+                ></textarea>
               </label>
               <label class="form-span-2">
                 <span>批量链接</span>
-                <textarea v-model="bulkMediaInput" rows="7" placeholder="支持多条链接，一行一个，也支持上传 yml / yaml 文件"></textarea>
+                <textarea
+                  v-model="bulkMediaInput"
+                  rows="7"
+                  placeholder="多行、每行一个 https:// 地址；# 可注释。支持 yml。主按钮会优先根据这里解析结果批量添加。"
+                ></textarea>
               </label>
               <label class="cover-upload-field form-span-2">
                 <span>批量文件导入</span>
@@ -1932,10 +1959,15 @@ onBeforeUnmount(() => {
               </label>
               <div class="hero-actions form-span-2">
                 <button type="submit" class="primary-button" :disabled="isSubmitting || !desktopTaskChannelId">
-                  {{ isSubmitting ? '处理中...' : '添加到这个广播' }}
+                  {{ isSubmitting ? '处理中...' : '添加（优先批量，否则单条）' }}
                 </button>
-                <button type="button" class="ghost-button" :disabled="isSubmitting || !desktopTaskChannelId || parsedBulkLinks.length === 0" @click="submitDesktopBatchTasks">
-                  {{ isSubmitting ? '处理中...' : `批量处理 ${parsedBulkLinks.length} 条链接` }}
+                <button
+                  type="button"
+                  class="ghost-button"
+                  :disabled="isSubmitting || !desktopTaskChannelId || parsedBulkLinks.length === 0"
+                  @click="submitDesktopBatchTasks"
+                >
+                  {{ isSubmitting ? '处理中...' : `只批量：${parsedBulkLinks.length} 条` }}
                 </button>
               </div>
             </form>
@@ -1952,7 +1984,10 @@ onBeforeUnmount(() => {
                 @click="openTaskDetail(task.id)"
               >
                 <div class="task-item-topline">
-                  <span class="task-status">{{ task.status }} · {{ task.progress }}%</span>
+                  <span class="task-status">
+                    <template v-if="showDesktopEpisodeProgressPct">{{ task.status }} · {{ task.progress }}%</template>
+                    <template v-else>{{ task.status }}</template>
+                  </span>
                   <span class="task-open-hint">打开音频</span>
                 </div>
                 <strong>{{ task.mediaTitle || task.mediaUrl }}</strong>

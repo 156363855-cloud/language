@@ -20,3 +20,5 @@ lingualink-deploy.tar.gz
 .env
 secrets/
 storage/
+*.pem
+gpuversion/backend-runtime-worker/

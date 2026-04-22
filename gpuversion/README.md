@@ -2,11 +2,13 @@
 
 这套目录是给有 NVIDIA 显卡的 Windows / Linux 电脑准备的本地处理方案。
 
-它会启动两部分：
+它会启动：
 
-- `frontend`
+- `mysql`  
+  本地元数据/任务表（与完整栈一致，Worker 必须能连上数据库才能启动）
+- `frontend`  
   本地管理页面，默认访问 `http://127.0.0.1:5173`
-- `backend-worker`
+- `backend-worker`  
   使用 GPU 做本地转写、翻译、上传对象存储，并把结果同步到云端 API A
 
 云端 API A 继续使用：

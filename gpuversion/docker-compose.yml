@@ -1,4 +1,25 @@
 services:
+  mysql:
+    image: mysql:8.4
+    container_name: lingualink-gpu-mysql
+    environment:
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-lingualink}
+      MYSQL_USER: ${MYSQL_USER:-lingualink}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-lingualink}
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-root}
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
+    volumes:
+      - ./storage/mysql:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-uroot", "-p${MYSQL_ROOT_PASSWORD:-root}"]
+      interval: 20s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    restart: unless-stopped
+
   backend-worker:
     build:
       context: ../backend
@@ -7,6 +28,10 @@ services:
     environment:
       DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
       APP_PROCESSING_ENABLED: "true"
+      SPRING_DATASOURCE_URL: ${SPRING_DATASOURCE_URL:-jdbc:mysql://mysql:3306/${MYSQL_DATABASE:-lingualink}?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Tokyo&allowPublicKeyRetrieval=true&useSSL=false}
+      SPRING_DATASOURCE_USERNAME: ${SPRING_DATASOURCE_USERNAME:-lingualink}
+      SPRING_DATASOURCE_PASSWORD: ${SPRING_DATASOURCE_PASSWORD:-lingualink}
+      SPRING_JPA_HIBERNATE_DDL_AUTO: ${SPRING_JPA_HIBERNATE_DDL_AUTO:-update}
       APP_CLOUD_API_BASE_URL: ${APP_CLOUD_API_BASE_URL:-http://43.155.234.124:3000/api}
       APP_STORAGE_ENDPOINT: ${APP_STORAGE_ENDPOINT:-}
       APP_STORAGE_PUBLIC_BASE_URL: ${APP_STORAGE_PUBLIC_BASE_URL:-}
@@ -28,6 +53,9 @@ services:
       - ./secrets:/app/secrets:ro
     ports:
       - "8081:8080"
+    depends_on:
+      mysql:
+        condition: service_healthy
     gpus: all
     restart: unless-stopped
     healthcheck:
