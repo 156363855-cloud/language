@@ -16,7 +16,9 @@ from yt_dlp import YoutubeDL
 
 DEEPSEEK_TRANSLATE_MODEL = "deepseek-chat"
 LOCAL_SEGMENT_SECONDS = 180
-LOCAL_TRANSCRIBE_MODEL = "small"
+LOCAL_TRANSCRIBE_MODEL = os.getenv("WHISPER_MODEL", "small")
+LOCAL_TRANSCRIBE_DEVICE = os.getenv("WHISPER_DEVICE", "cpu")
+LOCAL_TRANSCRIBE_COMPUTE_TYPE = os.getenv("WHISPER_COMPUTE_TYPE", "int8")
 TRANSLATION_BATCH_SIZE = 20
 MAX_AUTO_TRANSLATION_SECONDS = 60 * 60
 
@@ -155,7 +157,11 @@ def transcribe_chunk(model: WhisperModel, audio_path: Path, source_language: str
 
 
 def transcribe_audio_locally(audio_path: Path, source_language: str, task_dir: Path) -> list[dict]:
-    model = WhisperModel(LOCAL_TRANSCRIBE_MODEL, device="cpu", compute_type="int8")
+    model = WhisperModel(
+        LOCAL_TRANSCRIBE_MODEL,
+        device=LOCAL_TRANSCRIBE_DEVICE,
+        compute_type=LOCAL_TRANSCRIBE_COMPUTE_TYPE,
+    )
     chunk_directory = task_dir / "local_chunks"
     chunks = split_audio_locally(audio_path, chunk_directory)
     all_segments = []

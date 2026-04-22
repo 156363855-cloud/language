@@ -1,0 +1,49 @@
+services:
+  backend-worker:
+    build:
+      context: ../backend
+      dockerfile: Dockerfile.worker.gpu
+    container_name: lingualink-gpu-backend-worker
+    environment:
+      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
+      APP_PROCESSING_ENABLED: "true"
+      APP_CLOUD_API_BASE_URL: ${APP_CLOUD_API_BASE_URL:-http://43.155.234.124:3000/api}
+      APP_STORAGE_ENDPOINT: ${APP_STORAGE_ENDPOINT:-}
+      APP_STORAGE_PUBLIC_BASE_URL: ${APP_STORAGE_PUBLIC_BASE_URL:-}
+      APP_STORAGE_ACCESS_KEY: ${APP_STORAGE_ACCESS_KEY:-}
+      APP_STORAGE_SECRET_KEY: ${APP_STORAGE_SECRET_KEY:-}
+      APP_STORAGE_BUCKET: ${APP_STORAGE_BUCKET:-}
+      APP_STORAGE_OCI_NAMESPACE: ${APP_STORAGE_OCI_NAMESPACE:-}
+      APP_STORAGE_OCI_REGION: ${APP_STORAGE_OCI_REGION:-}
+      APP_STORAGE_OCI_TENANCY: ${APP_STORAGE_OCI_TENANCY:-}
+      APP_STORAGE_OCI_USER: ${APP_STORAGE_OCI_USER:-}
+      APP_STORAGE_OCI_FINGERPRINT: ${APP_STORAGE_OCI_FINGERPRINT:-}
+      APP_STORAGE_OCI_KEY_FILE: ${APP_STORAGE_OCI_KEY_FILE:-/app/secrets/oracle-objectstorage.pem}
+      APP_CLOUD_IMPORT_TOKEN: ${APP_CLOUD_IMPORT_TOKEN:-}
+      WHISPER_MODEL: ${WHISPER_MODEL:-small}
+      WHISPER_DEVICE: ${WHISPER_DEVICE:-cuda}
+      WHISPER_COMPUTE_TYPE: ${WHISPER_COMPUTE_TYPE:-float16}
+    volumes:
+      - ./backend-runtime-worker:/app/backend/runtime
+      - ./secrets:/app/secrets:ro
+    ports:
+      - "8081:8080"
+    gpus: all
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8080/actuator/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 40s
+
+  frontend:
+    build:
+      context: ../frontend
+    container_name: lingualink-gpu-frontend
+    depends_on:
+      backend-worker:
+        condition: service_healthy
+    ports:
+      - "5173:80"
+    restart: unless-stopped
