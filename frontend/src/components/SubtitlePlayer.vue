@@ -185,7 +185,10 @@ async function warmAudioCache() {
       token: getAuthToken()
     })
 
-    if (cachedUrl && resolvedAudioUrl.value !== cachedUrl) {
+    const isActivelyPlaying = Boolean(audioRef.value && !audioRef.value.paused)
+    const hasMeaningfulProgress = (audioRef.value?.currentTime ?? currentTime.value) > 1
+
+    if (cachedUrl && resolvedAudioUrl.value !== cachedUrl && !isActivelyPlaying && !hasMeaningfulProgress) {
       resolvedAudioUrl.value = cachedUrl
     }
   } catch {

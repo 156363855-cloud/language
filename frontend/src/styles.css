@@ -20,6 +20,10 @@ body {
   min-height: 100vh;
 }
 
+#app {
+  min-height: 100vh;
+}
+
 button,
 input,
 select,
@@ -183,6 +187,50 @@ button {
   border: 1px solid rgba(20, 50, 61, 0.08);
   box-shadow: 0 18px 40px rgba(20, 50, 61, 0.14);
   backdrop-filter: blur(18px);
+}
+
+.pwa-install-banner {
+  position: fixed;
+  left: 12px;
+  right: 12px;
+  bottom: calc(82px + env(safe-area-inset-bottom));
+  z-index: 24;
+  display: grid;
+  gap: 12px;
+  padding: 16px 18px;
+  border-radius: 22px;
+  background: rgba(255, 252, 246, 0.96);
+  border: 1px solid rgba(11, 122, 117, 0.14);
+  box-shadow: 0 16px 36px rgba(20, 50, 61, 0.14);
+  backdrop-filter: blur(18px);
+}
+
+.pwa-install-copy {
+  display: grid;
+  gap: 6px;
+}
+
+.pwa-install-copy strong {
+  color: #14323d;
+  font-size: 0.98rem;
+}
+
+.pwa-install-copy p {
+  margin: 0;
+  color: #5a727a;
+  font-size: 0.9rem;
+  line-height: 1.45;
+}
+
+.pwa-install-actions {
+  display: flex;
+  gap: 10px;
+  justify-content: flex-end;
+}
+
+.pwa-install-button,
+.pwa-install-dismiss {
+  min-width: 110px;
 }
 
 .interface-language-switcher .switch-button {
@@ -785,6 +833,7 @@ select {
   gap: 12px;
   min-height: calc(100vh - 64px);
   height: calc(100vh - 64px);
+  min-width: 0;
   overflow: hidden;
 }
 
@@ -1431,6 +1480,8 @@ select {
   }
 
   .page-shell.mobile-shell.detail-shell {
+    height: 100dvh;
+    max-height: 100dvh;
     padding-bottom: 0;
     overflow: hidden;
   }
@@ -1619,6 +1670,7 @@ select {
     gap: 10px;
     height: calc(100dvh - 12px);
     min-height: calc(100dvh - 12px);
+    max-height: calc(100dvh - 12px);
     overflow: hidden;
     grid-template-rows: auto minmax(0, 1fr);
   }
@@ -1649,6 +1701,7 @@ select {
   .mobile-player-card {
     padding: 14px 14px 102px;
     height: 100%;
+    min-height: 0;
     overflow: hidden;
     display: grid;
     grid-template-rows: auto minmax(0, 1fr) auto;
@@ -1779,6 +1832,24 @@ select {
     background: linear-gradient(135deg, #0b7a75, #13758e);
     color: #f6fbfa;
     box-shadow: 0 10px 24px rgba(11, 122, 117, 0.24);
+  }
+
+  .pwa-install-banner {
+    left: 10px;
+    right: 10px;
+    bottom: calc(84px + env(safe-area-inset-bottom));
+    padding: 14px 16px;
+  }
+
+  .pwa-install-actions {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .pwa-install-button,
+  .pwa-install-dismiss {
+    width: 100%;
+    min-width: 0;
   }
 }
 

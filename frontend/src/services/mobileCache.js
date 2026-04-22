@@ -8,9 +8,15 @@ const AUDIO_CACHE_META_KEY = 'lingualink_audio_cache_meta_v1'
 const PLAYBACK_PROGRESS_KEY = 'lingualink_playback_progress_v1'
 const AUDIO_CACHE_DIR = 'lingualink/audio'
 const AUDIO_CACHE_TTL_MS = 7 * 24 * 60 * 60 * 1000
+const BROWSER_AUDIO_CACHE_NAME = 'lingualink-pwa-audio-v1'
+const browserAudioObjectUrls = new Map()
 
 function isNativeApp() {
   return Capacitor.isNativePlatform()
+}
+
+function canUseBrowserAudioCache() {
+  return !isNativeApp() && typeof window !== 'undefined' && window.isSecureContext && 'caches' in window
 }
 
 async function getJson(key, fallbackValue) {
@@ -297,7 +303,7 @@ async function deleteCachedAudioFile(relativePath) {
 }
 
 export async function cleanupExpiredAudioCache() {
-  if (!isNativeApp()) {
+  if (!isNativeApp() && !canUseBrowserAudioCache()) {
     return
   }
 
@@ -310,7 +316,19 @@ export async function cleanupExpiredAudioCache() {
     if (!lastPlayedAt || now - lastPlayedAt <= AUDIO_CACHE_TTL_MS) {
       continue
     }
-    await deleteCachedAudioFile(entry.path)
+    if (isNativeApp()) {
+      await deleteCachedAudioFile(entry.path)
+    } else if (canUseBrowserAudioCache()) {
+      const cache = await caches.open(BROWSER_AUDIO_CACHE_NAME)
+      if (entry.sourceUrl) {
+        await cache.delete(entry.sourceUrl)
+      }
+      const objectUrl = browserAudioObjectUrls.get(taskId)
+      if (objectUrl) {
+        URL.revokeObjectURL(objectUrl)
+        browserAudioObjectUrls.delete(taskId)
+      }
+    }
     delete meta[taskId]
     changed = true
   }
@@ -321,14 +339,14 @@ export async function cleanupExpiredAudioCache() {
 }
 
 export async function getCachedAudioUrl(taskId) {
-  if (!isNativeApp() || !taskId) {
+  if (!taskId) {
     return ''
   }
 
   await cleanupExpiredAudioCache()
   const meta = await loadAudioMeta()
   const entry = meta[taskId]
-  if (!entry?.path) {
+  if (!entry) {
     return ''
   }
 
@@ -338,12 +356,46 @@ export async function getCachedAudioUrl(taskId) {
       lastPlayedAt: Date.now()
     }
     await saveAudioMeta(meta)
-    const uri = await Filesystem.getUri({
-      path: entry.path,
-      directory: Directory.Data
-    })
-    return Capacitor.convertFileSrc(uri.uri)
+
+    if (isNativeApp()) {
+      if (!entry?.path) {
+        return ''
+      }
+      const uri = await Filesystem.getUri({
+        path: entry.path,
+        directory: Directory.Data
+      })
+      return Capacitor.convertFileSrc(uri.uri)
+    }
+
+    if (!canUseBrowserAudioCache() || !entry.sourceUrl) {
+      return ''
+    }
+
+    const existingObjectUrl = browserAudioObjectUrls.get(taskId)
+    if (existingObjectUrl) {
+      return existingObjectUrl
+    }
+
+    const cache = await caches.open(BROWSER_AUDIO_CACHE_NAME)
+    const cachedResponse = await cache.match(entry.sourceUrl)
+    if (!cachedResponse) {
+      delete meta[taskId]
+      await saveAudioMeta(meta)
+      return ''
+    }
+
+    const objectUrl = URL.createObjectURL(await cachedResponse.blob())
+    browserAudioObjectUrls.set(taskId, objectUrl)
+    return objectUrl
   } catch {
+    if (!isNativeApp()) {
+      const objectUrl = browserAudioObjectUrls.get(taskId)
+      if (objectUrl) {
+        URL.revokeObjectURL(objectUrl)
+        browserAudioObjectUrls.delete(taskId)
+      }
+    }
     delete meta[taskId]
     await saveAudioMeta(meta)
     return ''
@@ -351,12 +403,16 @@ export async function getCachedAudioUrl(taskId) {
 }
 
 export async function cacheRecentlyPlayedAudio({ taskId, remoteUrl, token }) {
-  if (!isNativeApp() || !taskId || !remoteUrl) {
+  if (!taskId || !remoteUrl) {
     return ''
   }
 
   await cleanupExpiredAudioCache()
-  await ensureAudioDirectory()
+  if (isNativeApp()) {
+    await ensureAudioDirectory()
+  } else if (!canUseBrowserAudioCache()) {
+    return ''
+  }
 
   const now = Date.now()
   const meta = await loadAudioMeta()
@@ -378,23 +434,40 @@ export async function cacheRecentlyPlayedAudio({ taskId, remoteUrl, token }) {
     throw new Error(`音频缓存失败（HTTP ${response.status}）`)
   }
 
-  const extension = sanitizeAudioExtension(response.headers.get('content-type'))
-  const relativePath = `${AUDIO_CACHE_DIR}/${taskId}.${extension}`
-  const base64 = arrayBufferToBase64(await response.arrayBuffer())
+  if (isNativeApp()) {
+    const extension = sanitizeAudioExtension(response.headers.get('content-type'))
+    const relativePath = `${AUDIO_CACHE_DIR}/${taskId}.${extension}`
+    const base64 = arrayBufferToBase64(await response.arrayBuffer())
 
-  await Filesystem.writeFile({
-    path: relativePath,
-    directory: Directory.Data,
-    data: base64,
-    recursive: true
-  })
+    await Filesystem.writeFile({
+      path: relativePath,
+      directory: Directory.Data,
+      data: base64,
+      recursive: true
+    })
 
-  meta[taskId] = {
-    path: relativePath,
-    sourceUrl: remoteUrl,
-    cachedAt: now,
-    lastPlayedAt: now
+    meta[taskId] = {
+      path: relativePath,
+      sourceUrl: remoteUrl,
+      cachedAt: now,
+      lastPlayedAt: now
+    }
+  } else {
+    const cache = await caches.open(BROWSER_AUDIO_CACHE_NAME)
+    const clonedResponse = response.clone()
+    await cache.put(remoteUrl, clonedResponse)
+    const oldObjectUrl = browserAudioObjectUrls.get(taskId)
+    if (oldObjectUrl) {
+      URL.revokeObjectURL(oldObjectUrl)
+      browserAudioObjectUrls.delete(taskId)
+    }
+    meta[taskId] = {
+      sourceUrl: remoteUrl,
+      cachedAt: now,
+      lastPlayedAt: now
+    }
   }
+
   await saveAudioMeta(meta)
   return getCachedAudioUrl(taskId)
 }

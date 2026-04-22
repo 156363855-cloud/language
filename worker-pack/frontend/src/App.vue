@@ -1720,7 +1720,7 @@ onBeforeUnmount(() => {
                 @click="openTaskDetail(task.id)"
               >
                 <div class="task-item-topline">
-                  <span class="task-status">{{ formatMobileTaskListStatus(task) }}</span>
+                  <span v-if="!isMobileLayout" class="task-status">{{ formatMobileTaskListStatus(task) }}</span>
                   <span class="task-open-hint">打开音频</span>
                 </div>
                 <strong class="task-title-clip">{{ task.mediaTitle || task.mediaUrl }}</strong>

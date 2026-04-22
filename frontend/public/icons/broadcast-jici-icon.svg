@@ -1,0 +1,98 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" role="img" aria-labelledby="title desc">
+  <title id="title">广播记词</title>
+  <desc id="desc">A rounded square icon with a radio, headphones, and language badges for English, Japanese, and Chinese.</desc>
+  <defs>
+    <linearGradient id="bg" x1="8%" x2="92%" y1="6%" y2="94%">
+      <stop offset="0%" stop-color="#fff8ef" />
+      <stop offset="52%" stop-color="#f6fbff" />
+      <stop offset="100%" stop-color="#edf4ff" />
+    </linearGradient>
+    <linearGradient id="radioBody" x1="14%" x2="86%" y1="10%" y2="92%">
+      <stop offset="0%" stop-color="#fff4de" />
+      <stop offset="50%" stop-color="#e9eefc" />
+      <stop offset="100%" stop-color="#bbc7f0" />
+    </linearGradient>
+    <linearGradient id="screen" x1="0%" x2="100%" y1="0%" y2="100%">
+      <stop offset="0%" stop-color="#0d2956" />
+      <stop offset="100%" stop-color="#1b4f90" />
+    </linearGradient>
+    <linearGradient id="knob" x1="18%" x2="82%" y1="16%" y2="84%">
+      <stop offset="0%" stop-color="#fffdf8" />
+      <stop offset="100%" stop-color="#e0b36b" />
+    </linearGradient>
+    <linearGradient id="headphones" x1="0%" x2="100%" y1="0%" y2="100%">
+      <stop offset="0%" stop-color="#20386e" />
+      <stop offset="100%" stop-color="#0d2048" />
+    </linearGradient>
+    <filter id="softShadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="22" stdDeviation="26" flood-color="#0d2d63" flood-opacity="0.18" />
+    </filter>
+  </defs>
+
+  <rect width="1024" height="1024" rx="220" fill="url(#bg)" />
+
+  <ellipse cx="520" cy="282" rx="360" ry="210" fill="#d7e8ff" opacity="0.75" />
+  <path d="M148 532c72-36 164-56 274-56s202 20 274 56" fill="none" stroke="#e6efff" stroke-width="20" stroke-linecap="round" opacity="0.9" />
+  <path d="M214 544c42-24 100-38 172-38" fill="none" stroke="#ffffff" stroke-width="14" stroke-linecap="round" opacity="0.75" />
+  <path d="M810 462c22 10 38 26 50 50" fill="none" stroke="#7fb6ff" stroke-width="18" stroke-linecap="round" opacity="0.9" />
+  <path d="M844 444c32 14 58 40 74 74" fill="none" stroke="#7fb6ff" stroke-width="14" stroke-linecap="round" opacity="0.75" />
+
+  <g filter="url(#softShadow)">
+    <path d="M270 465c0-140 114-252 254-252s254 112 254 252" fill="none" stroke="url(#headphones)" stroke-width="40" stroke-linecap="round" />
+    <rect x="214" y="430" width="112" height="190" rx="56" fill="url(#headphones)" />
+    <rect x="722" y="430" width="112" height="190" rx="56" fill="url(#headphones)" />
+
+    <g transform="translate(304 336)">
+      <rect width="420" height="290" rx="42" fill="url(#radioBody)" />
+      <rect x="24" y="36" width="220" height="210" rx="28" fill="url(#screen)" />
+      <g fill="#0f1f3f" opacity="0.82">
+        <circle cx="72" cy="86" r="8" />
+        <circle cx="104" cy="86" r="8" />
+        <circle cx="136" cy="86" r="8" />
+        <circle cx="168" cy="86" r="8" />
+        <circle cx="200" cy="86" r="8" />
+        <circle cx="72" cy="118" r="8" />
+        <circle cx="104" cy="118" r="8" />
+        <circle cx="136" cy="118" r="8" />
+        <circle cx="168" cy="118" r="8" />
+        <circle cx="200" cy="118" r="8" />
+        <circle cx="72" cy="150" r="8" />
+        <circle cx="104" cy="150" r="8" />
+        <circle cx="136" cy="150" r="8" />
+        <circle cx="168" cy="150" r="8" />
+        <circle cx="200" cy="150" r="8" />
+        <circle cx="72" cy="182" r="8" />
+        <circle cx="104" cy="182" r="8" />
+        <circle cx="136" cy="182" r="8" />
+        <circle cx="168" cy="182" r="8" />
+        <circle cx="200" cy="182" r="8" />
+      </g>
+      <circle cx="334" cy="144" r="78" fill="#18335e" />
+      <circle cx="334" cy="144" r="56" fill="url(#knob)" />
+      <circle cx="334" cy="144" r="20" fill="#fff8ef" opacity="0.9" />
+      <path d="M334 70v-20M334 238v-20M260 144h-20M428 144h-20M284 94l-14-14M384 194l-14-14M284 194l-14 14M384 94l-14 14" stroke="#ffb04d" stroke-width="8" stroke-linecap="round" />
+      <path d="M312 18l72-92" fill="none" stroke="#b7c7ea" stroke-width="12" stroke-linecap="round" />
+      <circle cx="390" cy="-86" r="10" fill="#b7c7ea" />
+    </g>
+  </g>
+
+  <g font-family="system-ui, -apple-system, BlinkMacSystemFont, 'PingFang SC', 'Noto Sans CJK SC', sans-serif" font-weight="700">
+    <g transform="translate(80 480)">
+      <rect width="220" height="116" rx="32" fill="#5ab0ff" />
+      <text x="34" y="64" fill="#ffffff" font-size="54">EN</text>
+      <text x="34" y="98" fill="#eef7ff" font-size="28" font-weight="500">English</text>
+    </g>
+    <g transform="translate(78 622)">
+      <rect width="230" height="126" rx="34" fill="#ff6d62" />
+      <text x="28" y="66" fill="#ffffff" font-size="46">日本語</text>
+      <text x="28" y="104" fill="#fff6f4" font-size="24" font-weight="500">にほんご</text>
+    </g>
+    <g transform="translate(86 778)">
+      <rect width="236" height="126" rx="34" fill="#ffbd4d" />
+      <text x="28" y="66" fill="#ffffff" font-size="50">中文</text>
+      <text x="28" y="104" fill="#fff8ed" font-size="24" font-weight="500">中文</text>
+    </g>
+  </g>
+
+  <text x="512" y="876" text-anchor="middle" fill="#123a7d" font-size="118" font-family="system-ui, -apple-system, BlinkMacSystemFont, 'PingFang SC', 'Noto Sans CJK SC', sans-serif" font-weight="800">广播记词</text>
+</svg>

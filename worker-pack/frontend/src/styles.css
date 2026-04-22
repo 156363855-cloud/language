@@ -20,6 +20,10 @@ body {
   min-height: 100vh;
 }
 
+#app {
+  min-height: 100vh;
+}
+
 button,
 input,
 select,
@@ -781,6 +785,7 @@ select {
   gap: 12px;
   min-height: calc(100vh - 64px);
   height: calc(100vh - 64px);
+  min-width: 0;
   overflow: hidden;
 }
 
@@ -1252,6 +1257,8 @@ select {
   }
 
   .page-shell.mobile-shell.detail-shell {
+    height: 100dvh;
+    max-height: 100dvh;
     padding-bottom: 0;
     overflow: hidden;
   }
@@ -1387,6 +1394,7 @@ select {
     gap: 10px;
     height: calc(100dvh - 12px);
     min-height: calc(100dvh - 12px);
+    max-height: calc(100dvh - 12px);
     overflow: hidden;
     grid-template-rows: auto minmax(0, 1fr);
   }
@@ -1417,6 +1425,7 @@ select {
   .mobile-player-card {
     padding: 14px 14px 102px;
     height: 100%;
+    min-height: 0;
     overflow: hidden;
     display: grid;
     grid-template-rows: auto minmax(0, 1fr) auto;

@@ -15,3 +15,9 @@ CapacitorApp.addListener('backButton', () => {
 
   CapacitorApp.exitApp()
 }).catch(() => {})
+
+if (!window.Capacitor && 'serviceWorker' in navigator) {
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register('/sw.js').catch(() => {})
+  })
+}

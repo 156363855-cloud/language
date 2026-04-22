@@ -43,6 +43,7 @@ import {
 import { Capacitor } from '@capacitor/core'
 
 const INTERFACE_LANGUAGE_KEY = 'lingualink_interface_language'
+const PWA_INSTALL_DISMISSED_KEY = 'broadcast_jici_pwa_install_dismissed_v1'
 
 const languageOptions = [
   { value: 'zh', labels: { zh: '中文', ja: '中国語', en: 'Chinese' } },
@@ -109,7 +110,12 @@ const uiMessages = {
     viewExplain: '查看解释',
     close: '关闭',
     language: 'Language',
-    closeTranslation: '关闭翻译'
+    closeTranslation: '关闭翻译',
+    installTitle: '添加到主屏幕',
+    installDescription: '装到主屏幕后，打开时就更像 App，也能启用离线缓存。',
+    installButton: '立即安装',
+    installLater: '稍后',
+    installIosHint: '请用 Safari 打开，然后点“分享” -> “添加到主屏幕”。'
   },
   ja: {
     account: 'アカウント',
@@ -163,7 +169,12 @@ const uiMessages = {
     viewExplain: '解説を見る',
     close: '閉じる',
     language: 'Language',
-    closeTranslation: '翻訳オフ'
+    closeTranslation: '翻訳オフ',
+    installTitle: 'ホーム画面に追加',
+    installDescription: 'ホーム画面に追加すると、App に近い見た目で開けて、オフラインキャッシュも使いやすくなります。',
+    installButton: '今すぐ追加',
+    installLater: 'あとで',
+    installIosHint: 'Safari で開き、「共有」→「ホーム画面に追加」を押してください。'
   },
   en: {
     account: 'Account',
@@ -217,7 +228,12 @@ const uiMessages = {
     viewExplain: 'View explanation',
     close: 'Close',
     language: 'Language',
-    closeTranslation: 'Hide translation'
+    closeTranslation: 'Hide translation',
+    installTitle: 'Add to Home Screen',
+    installDescription: 'Install it on your home screen for an app-like launch experience and offline caching.',
+    installButton: 'Install now',
+    installLater: 'Later',
+    installIosHint: 'Open this page in Safari, tap Share, then choose Add to Home Screen.'
   }
 }
 
@@ -349,6 +365,9 @@ const taskMoveFolderId = ref('inbox')
 const activeLanguage = ref('zh')
 const currentView = ref('dashboard')
 const viewportWidth = ref(typeof window === 'undefined' ? 1280 : window.innerWidth)
+const deferredInstallPrompt = ref(null)
+const dismissedInstallPrompt = ref(false)
+const isStandalonePwa = ref(false)
 let pollTimer = null
 
 const selectedTask = computed(() => tasks.value.find((task) => task.id === selectedTaskId.value) || null)
@@ -356,6 +375,20 @@ const isNativeApp = computed(() => Capacitor.isNativePlatform())
 const isMobileLayout = computed(() => viewportWidth.value <= 820)
 const showDesktopEpisodeProgressPct = computed(() => viewportWidth.value > 1024)
 const currentInterfaceLanguage = computed(() => normalizeLanguage(interfaceLanguage.value))
+const isIosDevice = computed(() => {
+  if (typeof navigator === 'undefined') {
+    return false
+  }
+  const userAgent = navigator.userAgent || ''
+  return /iphone|ipad|ipod/i.test(userAgent)
+})
+const canShowInstallPrompt = computed(() =>
+  !isNativeApp.value
+  && isMobileLayout.value
+  && !isStandalonePwa.value
+  && !dismissedInstallPrompt.value
+  && (Boolean(deferredInstallPrompt.value) || isIosDevice.value)
+)
 const preferredContentLanguage = computed(() => currentUser.value?.preferredContentLanguage || 'en')
 const visibleTasks = computed(() => {
   if (!isMobileLayout.value) {
@@ -588,6 +621,63 @@ function setInterfaceLanguage(nextLanguage) {
   interfaceLanguage.value = normalized
   try {
     localStorage.setItem(INTERFACE_LANGUAGE_KEY, normalized)
+  } catch {
+    // Ignore local storage failures.
+  }
+}
+
+function detectStandaloneMode() {
+  if (typeof window === 'undefined') {
+    return false
+  }
+  return window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone === true
+}
+
+function refreshInstallPromptState() {
+  isStandalonePwa.value = detectStandaloneMode()
+  try {
+    dismissedInstallPrompt.value = localStorage.getItem(PWA_INSTALL_DISMISSED_KEY) === '1'
+  } catch {
+    dismissedInstallPrompt.value = false
+  }
+}
+
+function dismissInstallPrompt() {
+  dismissedInstallPrompt.value = true
+  try {
+    localStorage.setItem(PWA_INSTALL_DISMISSED_KEY, '1')
+  } catch {
+    // Ignore local storage failures.
+  }
+}
+
+async function promptInstall() {
+  if (!deferredInstallPrompt.value) {
+    return
+  }
+
+  const installPrompt = deferredInstallPrompt.value
+  deferredInstallPrompt.value = null
+
+  try {
+    await installPrompt.prompt()
+    await installPrompt.userChoice
+  } catch {
+    // Ignore cancelled prompt.
+  }
+}
+
+function handleBeforeInstallPrompt(event) {
+  event.preventDefault()
+  deferredInstallPrompt.value = event
+  refreshInstallPromptState()
+}
+
+function handleAppInstalled() {
+  deferredInstallPrompt.value = null
+  isStandalonePwa.value = true
+  try {
+    localStorage.removeItem(PWA_INSTALL_DISMISSED_KEY)
   } catch {
     // Ignore local storage failures.
   }
@@ -1673,9 +1763,12 @@ watch(selectedFolderId, (folderId) => {
 
 onMounted(() => {
   updateViewportWidth()
+  refreshInstallPromptState()
   syncViewFromHash()
   window.addEventListener('hashchange', syncViewFromHash)
   window.addEventListener('resize', updateViewportWidth)
+  window.addEventListener('beforeinstallprompt', handleBeforeInstallPrompt)
+  window.addEventListener('appinstalled', handleAppInstalled)
   bootstrapAuthenticatedUser()
 })
 
@@ -1683,6 +1776,8 @@ onBeforeUnmount(() => {
   stopPolling()
   window.removeEventListener('hashchange', syncViewFromHash)
   window.removeEventListener('resize', updateViewportWidth)
+  window.removeEventListener('beforeinstallprompt', handleBeforeInstallPrompt)
+  window.removeEventListener('appinstalled', handleAppInstalled)
 })
 </script>
 
@@ -1967,7 +2062,7 @@ onBeforeUnmount(() => {
                 @click="openTaskDetail(task.id)"
               >
                 <div class="task-item-topline">
-                  <span class="task-status">{{ formatMobileTaskListStatus(task) }}</span>
+                  <span v-if="!isMobileLayout" class="task-status">{{ formatMobileTaskListStatus(task) }}</span>
                   <span class="task-open-hint">{{ t('openAudio') }}</span>
                 </div>
                 <strong class="task-title-clip">{{ task.mediaTitle || task.mediaUrl }}</strong>
@@ -2401,6 +2496,28 @@ onBeforeUnmount(() => {
         />
       </section>
     </div>
+
+    <section v-if="canShowInstallPrompt" class="pwa-install-banner">
+      <div class="pwa-install-copy">
+        <strong>{{ t('installTitle') }}</strong>
+        <p>
+          {{ deferredInstallPrompt ? t('installDescription') : t('installIosHint') }}
+        </p>
+      </div>
+      <div class="pwa-install-actions">
+        <button
+          v-if="deferredInstallPrompt"
+          type="button"
+          class="primary-button pwa-install-button"
+          @click="promptInstall"
+        >
+          {{ t('installButton') }}
+        </button>
+        <button type="button" class="ghost-button pwa-install-dismiss" @click="dismissInstallPrompt">
+          {{ t('installLater') }}
+        </button>
+      </div>
+    </section>
 
     <nav v-if="isMobileLayout && authReady && currentUser && currentView === 'dashboard'" class="mobile-bottom-tabbar">
       <button
